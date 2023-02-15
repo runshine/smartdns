@@ -43,6 +43,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <ucontext.h>
+#include <czmq.h>
 
 #define MAX_LINE_LEN 1024
 #define MAX_KEY_LEN 64
@@ -51,6 +52,8 @@
 
 static int verbose_screen;
 char operator_script[4096];
+char zmq_server[256];
+void* zmq_client = NULL;
 int capget(struct __user_cap_header_struct *header, struct __user_cap_data_struct *cap);
 int capset(struct __user_cap_header_struct *header, struct __user_cap_data_struct *cap);
 
@@ -144,6 +147,7 @@ static void _help(void)
 		"  -S            ignore segment fault signal.\n"
 		"  -x            verbose screen.\n"
 		"  -v            dispaly version.\n"
+		"  -z            zmq connect address\n"
         "  -O [script]   when match ipset, call script. call format is: IP IPSET DOMAIN TIMEOUT IPV4/IPV6 OPERATOR, for example: 140.82.112.0 ipset live.github.com 120 ipv4 add\n"
 		"  -h            show this help message.\n"
 
@@ -343,6 +347,20 @@ static const char *_smartdns_log_path(void)
 	return logfile;
 }
 
+static int _zmq_sever_connect(void){
+	if (strlen(zmq_server) > 0 ) {
+		void *context = zmq_init(1);
+		zmq_client = zmq_socket(context, ZMQ_REQ);
+		int ret = zmq_connect(zmq_client, zmq_server);
+		if (ret != 0) {
+			fprintf(stderr, "connect to zmq server failed, errno: %d\n", errno);
+			fflush(stderr);
+			exit(-1);
+		}
+		tlog(TLOG_INFO, "connect to zmq server success: %s", zmq_server);
+	}
+}
+
 static int _smartdns_init(void)
 {
 	int ret = 0;
@@ -359,7 +377,7 @@ static int _smartdns_init(void)
 
 	tlog(TLOG_NOTICE, "smartdns starting...(Copyright (C) Nick Peng <pymumu@gmail.com>, build: %s %s)", __DATE__,
 		 __TIME__);
-
+	_zmq_sever_connect();
 	if (_smartdns_init_ssl() != 0) {
 		tlog(TLOG_ERROR, "init ssl failed.");
 		goto errout;
@@ -526,6 +544,7 @@ int main(int argc, char *argv[])
 	int signal_ignore = 0;
 	sigset_t empty_sigblock;
 	memset(operator_script,0,sizeof(operator_script));
+	memset(zmq_server,0,sizeof(zmq_server));
 	safe_strncpy(config_file, SMARTDNS_CONF_FILE, MAX_LINE_LEN);
 	safe_strncpy(pid_file, SMARTDNS_PID_FILE, MAX_LINE_LEN);
 
@@ -533,7 +552,7 @@ int main(int argc, char *argv[])
 	sigemptyset(&empty_sigblock);
 	sigprocmask(SIG_SETMASK, &empty_sigblock, NULL);
 
-	while ((opt = getopt(argc, argv, "fhc:p:SvxN:O:")) != -1) {
+	while ((opt = getopt(argc, argv, "fhc:p:SvxN:O:z:")) != -1) {
 		switch (opt) {
 		case 'f':
 			is_foreground = 1;
@@ -543,6 +562,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'p':
 			snprintf(pid_file, sizeof(pid_file), "%s", optarg);
+			break;
+		case 'z':
+			snprintf(zmq_server, sizeof(zmq_server), "%s", optarg);
 			break;
 		case 'O':
 			snprintf(operator_script, sizeof(operator_script), "%s", optarg);

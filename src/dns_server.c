@@ -43,6 +43,9 @@
 #include <sys/eventfd.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include "cJSON.h"
+#include "cJSON_Utils.h"
+#include <czmq.h>
 
 #define DNS_MAX_EVENTS 256
 #define IPV6_READY_CHECK_TIME 180
@@ -1444,6 +1447,95 @@ static int _dns_server_setup_ipset_nftset_packet(struct dns_server_post_context 
 	return 0;
 }
 
+extern void* zmq_client;
+static int _dns_server_setup_zmq(struct dns_server_post_context *context)
+{
+	int ttl = 0;
+	struct dns_request *request = context->request;
+	char name[DNS_MAX_CNAME_LEN] = {0};
+	int rr_count = 0;
+	int i = 0;
+	int j = 0;
+	struct dns_rrs *rrs = NULL;
+	char zmq_buf[8192] = {0};
+	char ipv4_addr[128] = {0};
+	char ipv6_addr[128] = {0};
+	if (context->ip_num <= 0 || zmq_client == NULL) {
+		return 0;
+	}
+	cJSON* result = cJSON_CreateObject();
+	cJSON* ipv4_record_array = cJSON_CreateArray();;
+	cJSON* ipv6_record_array = cJSON_CreateObject();
+	cJSON* cname_record_array = cJSON_CreateObject();
+	for (j = 1; j < DNS_RRS_END; j++) {
+		rrs = dns_get_rrs_start(context->packet, j, &rr_count);
+		for (i = 0; i < rr_count && rrs; i++, rrs = dns_get_rrs_next(context->packet, rrs)) {
+			switch (rrs->type) {
+			case DNS_T_A: {
+				unsigned char addr[4];
+				if (context->qtype != DNS_T_A) {
+					break;
+				}
+				/* get A result */
+				dns_get_A(rrs, name, DNS_MAX_CNAME_LEN, &ttl, addr);
+				cJSON* ipv4_record = cJSON_CreateObject();
+				snprintf(ipv4_addr,sizeof(ipv4_addr),"%d.%d.%d.%d",addr[0], addr[1], addr[2],addr[3]);
+				cJSON_AddStringToObject(ipv4_record,"addr",ipv4_addr);
+				cJSON_AddStringToObject(ipv4_record,"domain",name);
+				cJSON_AddNumberToObject(ipv4_record,"ttl",ttl);
+				cJSON_AddItemToArray(ipv4_record_array,ipv4_record);
+			} break;
+			case DNS_T_AAAA: {
+				unsigned char addr[16];
+				if (context->qtype != DNS_T_AAAA) {
+					/* ignore non-matched query type */
+					break;
+				}
+				dns_get_AAAA(rrs, name, DNS_MAX_CNAME_LEN, &ttl, addr);
+				cJSON* ipv6_record = cJSON_CreateObject();;
+				snprintf(ipv6_addr,sizeof(ipv6_addr),"%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x:%.2x%.2x",
+						 addr[0], addr[1], addr[2], addr[3], addr[4], addr[5],addr[6], addr[7],
+						 addr[8], addr[9], addr[10], addr[11], addr[12], addr[13], addr[14],addr[15]);
+				cJSON_AddStringToObject(ipv6_record,"addr",ipv6_addr);
+				cJSON_AddStringToObject(ipv6_record,"domain",name);
+				cJSON_AddNumberToObject(ipv6_record,"ttl",ttl);
+				cJSON_AddItemToArray(ipv6_record_array,ipv6_record);
+			} break;
+			case DNS_T_CNAME: {
+				char cname[DNS_MAX_CNAME_LEN];
+				char name[DNS_MAX_CNAME_LEN] = {0};
+				if (dns_conf_force_no_cname) {
+					continue;
+				}
+				dns_get_CNAME(rrs, name, DNS_MAX_CNAME_LEN, &ttl, cname, DNS_MAX_CNAME_LEN);
+				cJSON* cname_record = cJSON_CreateObject();
+				cJSON_AddStringToObject(cname_record,"domain",name);
+				cJSON_AddStringToObject(cname_record,"cname",cname);
+				cJSON_AddNumberToObject(cname_record,"ttl",ttl);
+				cJSON_AddItemToArray(cname_record_array,cname_record);
+			} break;
+			default:
+				break;
+			}
+		}
+	}
+	cJSON_AddItemToObject(result,"ipv4",ipv4_record_array);
+	cJSON_AddItemToObject(result,"ipv6",ipv6_record_array);
+	cJSON_AddItemToObject(result,"cname",cname_record_array);
+	cJSON_AddStringToObject(result,"request-domain",context->request->domain);
+	cJSON_PrintPreallocated(result,zmq_buf,sizeof(zmq_buf),1);
+	cJSON_Print(result);
+	zmq_msg_t msg;
+	zmq_msg_init_size(&msg,strlen(zmq_buf));
+	strncpy(zmq_msg_data(&msg),zmq_buf,strlen(zmq_buf));
+	zmq_msg_send(&msg,zmq_client,0);
+	zmq_msg_recv(&msg,zmq_client,0);
+	zmq_msg_close(&msg);
+	cJSON_Delete(result);
+	return 0;
+}
+
+
 static int _dns_request_post(struct dns_server_post_context *context)
 {
 	struct dns_request *request = context->request;
@@ -1473,7 +1565,7 @@ static int _dns_request_post(struct dns_server_post_context *context)
 
 	/* setup ipset */
 	_dns_server_setup_ipset_nftset_packet(context);
-
+	_dns_server_setup_zmq(context);
 	if (context->do_reply == 0) {
 		return 0;
 	}
