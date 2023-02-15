@@ -349,6 +349,13 @@ static const char *_smartdns_log_path(void)
 
 static int _zmq_sever_connect(void){
 	if (strlen(zmq_server) > 0 ) {
+		char ipc_prefix[] = "ipc://";
+		if(strncmp(zmq_server,ipc_prefix,strlen(ipc_prefix)) == 0){
+			if(access(&zmq_server[strlen(ipc_prefix)],O_RDONLY) != 0){
+				fprintf(stderr,"unable access ipc zeroMQ file, ignore zeroMQ");
+				return 0;
+			}
+		}
 		void *context = zmq_init(1);
 		zmq_client = zmq_socket(context, ZMQ_REQ);
 		int ret = zmq_connect(zmq_client, zmq_server);
@@ -359,6 +366,7 @@ static int _zmq_sever_connect(void){
 		}
 		tlog(TLOG_INFO, "connect to zmq server success: %s", zmq_server);
 	}
+	return 0;
 }
 
 static int _smartdns_init(void)
