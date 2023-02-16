@@ -205,6 +205,14 @@ def process_ip_file(ip_file):
                 logging.info("add static ip net from ip file: {} -- {},{}".format(ip_file,line,ipv4_gw))
 
 
+def process_extra_ip(args):
+    if args.extra is not None and len(args.extra) != 0:
+        if not os.path.exists(args.extra):
+            logging.error("failed to open extra file, not exist: {}".format(args.extra))
+            exit(-1)
+        process_ip_file(args.extra)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log',      metavar='l', type=str, required=False, help='log file')
@@ -226,10 +234,7 @@ if __name__ == "__main__":
         logging.basicConfig(format='%(asctime)s %(message)s', level=log_level)
     if args.clear:
         vtysh_clear_all_static_route(args.dns)
+        process_extra_ip(args)
         exit(0)
-    if args.extra is not None and len(args.extra) != 0:
-        if not os.path.exists(args.extra):
-            logging.error("failed to open extra file, not exist: {}".format(args.extra))
-            exit(-1)
-        process_ip_file(args.extra)
+    process_extra_ip(args)
     start_zmq_server(args,None,None)

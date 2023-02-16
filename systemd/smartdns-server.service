@@ -6,7 +6,8 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=simple
-ExecStart=/usr/sbin/dns_server.py --zmq=ipc:///tmp/dns_server_zmq --mongodb=aaa --node_id=10.11.200.100 --dns=1.1.1.1 --log /tmp/dns_server.log --extra=/opt/tel.ip
+EnvironmentFile=/etc/default/smartdns
+ExecStart=/usr/sbin/dns_server.py --zmq=ipc:///tmp/dns_server_zmq --mongodb=$MONGODB --node_id=$NODE_ID --dns=$DNS --log /tmp/dns_server.log $EXTRA_SERVER_OPTS
 Restart=always
 RestartSec=2
 TimeoutStopSec=15
