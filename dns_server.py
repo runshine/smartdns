@@ -226,6 +226,7 @@ if __name__ == "__main__":
         logging.basicConfig(format='%(asctime)s %(message)s', level=log_level)
     if args.clear:
         vtysh_clear_all_static_route(args.dns)
+        exit(0)
     if args.extra is not None and len(args.extra) != 0:
         if not os.path.exists(args.extra):
             logging.error("failed to open extra file, not exist: {}".format(args.extra))

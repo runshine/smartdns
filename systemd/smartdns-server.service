@@ -5,9 +5,8 @@ StartLimitBurst=0
 StartLimitIntervalSec=60
 
 [Service]
-PIDFile=/var/run/smartdns.pid
-EnvironmentFile=/etc/default/smartdns
-ExecStart=/usr/sbin/dns_server.py --zmq=ipc:///tmp/dns_server_zmq --mongodb=aaa --node_id=10.11.200.100 --dns=1.1.1.1 --log /tmp/dns_server.log
+Type=simple
+ExecStart=/usr/sbin/dns_server.py --zmq=ipc:///tmp/dns_server_zmq --mongodb=aaa --node_id=10.11.200.100 --dns=1.1.1.1 --log /tmp/dns_server.log --extra=/opt/tel.ip
 Restart=always
 RestartSec=2
 TimeoutStopSec=15
