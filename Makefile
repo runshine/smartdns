@@ -44,5 +44,6 @@ install: SMARTDNS_BIN
 	install -v -m 0640 -D -t $(DESTDIR)$(SYSCONFDIR)/smartdns etc/smartdns/smartdns.conf
 	install -v -m 0755 -D -t $(DESTDIR)$(SBINDIR) src/smartdns
 	install -v -m 0644 -D -t $(DESTDIR)$(SYSTEMDSYSTEMUNITDIR) systemd/smartdns.service
+	install -v -m 0644 -D -t $(DESTDIR)$(SYSTEMDSYSTEMUNITDIR) systemd/smartdns-server.service
 	install -v -m 0755 -D -t $(DESTDIR)$(SBINDIR) dns_server.py
 
