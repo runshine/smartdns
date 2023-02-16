@@ -163,7 +163,7 @@ def update_config_timer(args,config,config_collection):
         config_lock.acquire()
         logging.info("config update, differ: {}".format(len(differ)))
         config.clear()
-        config = config + new_config
+        config.extend(new_config)
         config_hashset = new_config_hashset
         config_lock.release()
 
