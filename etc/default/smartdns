@@ -4,6 +4,6 @@
 # Options to pass to smartdns
 SMART_DNS_OPTS=
 EXTRA_SERVER_OPTS=--extra=/opt/tel.ip
-NODE_ID=10.11.200.100
-DNS=1.1.1.1
-MONGODB=aaa
+NODE_ID=--node_id=10.11.200.100
+DNS=--dns=1.1.1.1
+MONGODB=--mongodb=aaa
