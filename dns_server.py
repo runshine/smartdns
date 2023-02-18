@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 import socket
+from logging.handlers import RotatingFileHandler
 
 import zmq
 import pymongo
@@ -279,10 +280,15 @@ if __name__ == "__main__":
         log_level = logging.DEBUG
     else:
         log_level = logging.INFO
+
+    logFormatter = "%(asctime)s [%(threadName)s] [%(levelname)-5.5s]  %(message)s"
     if args.log is not None and len(args.log) != 0:
-        logging.basicConfig(format='%(asctime)s %(message)s', filename=args.log, level=log_level)
+        fileHandler = RotatingFileHandler(args.log, mode='a', maxBytes=5 * 1024 * 1024, backupCount=1, encoding='utf-8', delay=False)
+        fileHandler.setFormatter(logging.Formatter(logFormatter))
+        logging.basicConfig(format=logFormatter, level=log_level,handlers=[fileHandler])
     else:
-        logging.basicConfig(format='%(asctime)s %(message)s', level=log_level)
+        logging.basicConfig(format=logFormatter, level=log_level)
+
     if args.clear:
         vtysh_clear_all_static_route(args.dns)
         process_extra_ip(args)
