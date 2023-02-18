@@ -1447,22 +1447,17 @@ static int _dns_server_setup_ipset_nftset_packet(struct dns_server_post_context 
 	return 0;
 }
 
-extern void* zmq_client;
-static int _dns_server_setup_zmq(struct dns_server_post_context *context)
-{
+
+static cJSON* create_log_json(struct dns_server_post_context *context){
 	int ttl = 0;
-	struct dns_request *request = context->request;
 	char name[DNS_MAX_CNAME_LEN] = {0};
+	char cname[DNS_MAX_CNAME_LEN] = {0};
 	int rr_count = 0;
 	int i = 0;
 	int j = 0;
 	struct dns_rrs *rrs = NULL;
-	char zmq_buf[8192] = {0};
 	char ipv4_addr[128] = {0};
 	char ipv6_addr[128] = {0};
-	if (context->ip_num <= 0 || zmq_client == NULL) {
-		return 0;
-	}
 	cJSON* result = cJSON_CreateObject();
 	cJSON* ipv4_record_array = cJSON_CreateArray();;
 	cJSON* ipv6_record_array = cJSON_CreateObject();
@@ -1502,8 +1497,6 @@ static int _dns_server_setup_zmq(struct dns_server_post_context *context)
 				cJSON_AddItemToArray(ipv6_record_array,ipv6_record);
 			} break;
 			case DNS_T_CNAME: {
-				char cname[DNS_MAX_CNAME_LEN];
-				char name[DNS_MAX_CNAME_LEN] = {0};
 				if (dns_conf_force_no_cname) {
 					continue;
 				}
@@ -1523,8 +1516,18 @@ static int _dns_server_setup_zmq(struct dns_server_post_context *context)
 	cJSON_AddItemToObject(result,"ipv6",ipv6_record_array);
 	cJSON_AddItemToObject(result,"cname",cname_record_array);
 	cJSON_AddStringToObject(result,"request-domain",context->request->domain);
+	return result;
+}
+
+extern void* zmq_client;
+static int _dns_server_setup_zmq(struct dns_server_post_context *context)
+{
+	if (context->ip_num <= 0 || zmq_client == NULL) {
+		return 0;
+	}
+	char zmq_buf[8192] = {0};
+	cJSON* result = create_log_json(context);
 	cJSON_PrintPreallocated(result,zmq_buf,sizeof(zmq_buf),1);
-	cJSON_Print(result);
 	zmq_msg_t msg;
 	zmq_msg_init_size(&msg,strlen(zmq_buf));
 	strncpy(zmq_msg_data(&msg),zmq_buf,strlen(zmq_buf));
@@ -1532,6 +1535,25 @@ static int _dns_server_setup_zmq(struct dns_server_post_context *context)
 	zmq_msg_recv(&msg,zmq_client,0);
 	zmq_msg_close(&msg);
 	cJSON_Delete(result);
+	return 0;
+}
+
+extern struct sockaddr_in udp_server_addr;
+extern int udp_server_fd;
+static int _dns_server_setup_udp_server(struct dns_server_post_context *context)
+{
+	if (context->ip_num <= 0 || udp_server_fd <= 0) {
+		return 0;
+	}
+	char res_buf[8192] = {0};
+	cJSON* result = create_log_json(context);
+	cJSON_PrintPreallocated(result,res_buf,sizeof(res_buf),1);
+	cJSON_Delete(result);
+	if (sendto(udp_server_fd, res_buf, (strlen(res_buf)), 0,
+			   (struct sockaddr *)&udp_server_addr, sizeof(udp_server_addr)) < 0)
+	{
+		tlog(TLOG_ERROR, "Failed to send to server, error: %s", strerror(errno));
+	}
 	return 0;
 }
 
@@ -1566,6 +1588,7 @@ static int _dns_request_post(struct dns_server_post_context *context)
 	/* setup ipset */
 	_dns_server_setup_ipset_nftset_packet(context);
 	_dns_server_setup_zmq(context);
+	_dns_server_setup_udp_server(context);
 	if (context->do_reply == 0) {
 		return 0;
 	}

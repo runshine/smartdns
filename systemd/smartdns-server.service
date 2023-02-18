@@ -7,7 +7,7 @@ StartLimitIntervalSec=60
 [Service]
 Type=simple
 EnvironmentFile=/etc/default/smartdns
-ExecStart=/usr/sbin/dns_server.py --zmq=ipc:///tmp/dns_server_zmq --mongodb=$MONGODB --node_id=$NODE_ID --dns=$DNS --log /tmp/dns_server.log $EXTRA_SERVER_OPTS
+ExecStart=/usr/sbin/dns_server.py --socket=udp://127.0.0.1:33441 --mongodb=$MONGODB --node_id=$NODE_ID --dns=$DNS --log /tmp/dns_server.log $EXTRA_SERVER_OPTS
 Restart=always
 RestartSec=2
 TimeoutStopSec=15

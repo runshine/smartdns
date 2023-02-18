@@ -10,24 +10,28 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+import socket
+
 import zmq
 import pymongo
 import operator
+from readerwriterlock import rwlock
 
 
-config_lock = threading.Lock()
+config_rw_lock = rwlock.RWLockFair()
 
 
 def get_domain_config(domain,config_array):
     possible_domain_config = []
-    config_lock.acquire()
+    read_marker = config_rw_lock.gen_rlock()
+    read_marker.acquire()
     for domain_config in config_array:
         if domain_config['domain'] == domain:
-            config_lock.release()
+            read_marker.release()
             return domain_config
         if domain.endswith('.'+ domain_config['domain']):
             possible_domain_config.append((len(domain_config['domain'])+1,domain_config))
-    config_lock.release()
+    read_marker.release()
     max_len = 0
     for domain_len,domain_config in possible_domain_config:
         if max_len < domain_len:
@@ -138,6 +142,7 @@ def read_config_from_dnsmasq(dnsmasq_config_dir):
 
 
 def vtysh_clear_all_static_route(dns_ip):
+    logging.info("Start clear all static route, except dns: {}/32".format(dns_ip))
     dns_net = (dns_ip + "/32",get_default_ipv4_gw())
     static_net_list = vtysh_list_static_route()
     for static_net in static_net_list:
@@ -160,12 +165,13 @@ def update_config_timer(args,config,config_collection):
         differ = set(config_hashset) ^ set(new_config_hashset)
         if len(differ) == 0:
             continue
-        config_lock.acquire()
-        logging.info("config update, differ: {}".format(len(differ)))
+        write_marker = config_rw_lock.gen_wlock()
+        write_marker.acquire()
+        logging.info("config update, differ: {}, befor: {}, after: {}".format(len(differ),len(config_hashset),len(new_config_hashset)))
         config.clear()
         config.extend(new_config)
         config_hashset = new_config_hashset
-        config_lock.release()
+        write_marker.release()
 
 
 def config_dns_route(dns_ip):
@@ -174,7 +180,8 @@ def config_dns_route(dns_ip):
 
 def start_zmq_server(args,record_collection,config_collection):
     zmq_socket = zmq.Context().socket(zmq.REP)
-    zmq_socket.bind("ipc:///tmp/dns_server_zmq")
+    logging.info("Start zmq server: addr: {}".format(args.zmq))
+    zmq_socket.bind(args.zmq)
     config = read_config_collection(args,config_collection)
     _thread.start_new_thread(update_config_timer,(args,config,config_collection))
     with ThreadPoolExecutor(max_workers=10) as executor:
@@ -182,6 +189,49 @@ def start_zmq_server(args,record_collection,config_collection):
             messages = zmq_socket.recv_string()
             executor.submit(process_dns_request,record_collection,config,messages)
             zmq_socket.send_string("ok")
+
+def start_socket_server(args,record_collection,config_collection):
+    socket_proto_url = args.socket
+    socket_proto = re.findall("\s*(.+)://\d+\.\d+\.\d+\.\d+",socket_proto_url)
+    if len(socket_proto) != 1:
+        logging.error("failed to parse socket proto url: {}, proto error".format(socket_proto_url))
+        exit(-1)
+    socket_proto = socket_proto[0]
+    socket_addr = re.findall("\s*.+://(\d+\.\d+\.\d+\.\d+)",socket_proto_url)
+    if len(socket_addr) != 1:
+        logging.error("failed to parse socket proto url: {}, addr error".format(socket_proto_url))
+        exit(-1)
+    socket_addr = socket_addr[0]
+    socket_port = re.findall("\s*.+://\d+\.\d+\.\d+\.\d+:(\d+)",socket_proto_url)
+    if len(socket_port) != 1:
+        socket_port = 34321
+    else:
+        socket_port = int(socket_port[0])
+    logging.info("Start socket server: proto: {}, addr: {}, port: {}".format(socket_proto,socket_addr,socket_port))
+    recv_message = None
+    if socket_proto == "udp":
+        server_socket_fd = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
+        server_socket_fd.bind((socket_addr, socket_port))
+
+        def udp_recv_message():
+            bytesAddressPair = server_socket_fd.recvfrom(65535)
+            message = bytesAddressPair[0]
+            try:
+                return message.decode('utf-8')
+            except Exception as e:
+                return None
+        recv_message = udp_recv_message
+    else:
+        logging.error("current not support socket proto: {}".format(socket_proto_url))
+        exit(-1)
+
+    config = read_config_collection(args,config_collection)
+    _thread.start_new_thread(update_config_timer,(args,config,config_collection))
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        while True:
+            messages = recv_message()
+            executor.submit(process_dns_request,record_collection,config,messages)
+
 
 
 def connect_to_mongodb(url):
@@ -216,10 +266,11 @@ def process_extra_ip(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log',      metavar='l', type=str, required=False, help='log file')
-    parser.add_argument('--zmq',      metavar='z', type=str, required=True,  help='zmq server url, example: ipc:///tmp/dns_server, tcp://*.1234')
+    parser.add_argument('--zmq',      metavar='z', type=str, required=False,  help='zmq server url, example: ipc:///tmp/dns_server, tcp://*.1234')
     parser.add_argument('--mongodb',  metavar='m', type=str, required=True,  help='mongodb url, example: mongodb://localhost:27017/')
     parser.add_argument('--node_id',  metavar='n', type=str, required=True,  help='node id, example: 10.10.8.1')
     parser.add_argument('--dns',      metavar='d', type=str, required=True,  help='dns IP, example: 8.8.8.8')
+    parser.add_argument('--socket',   metavar='u', type=str, required=False,  help='server proto, current support udp, example: udp://127.0.0.1:1234')
     parser.add_argument('--extra',    metavar='e', type=str, required=False, help='extra_ip_net list file')
     parser.add_argument('--debug',    action='store_true', help='config if debug')
     parser.add_argument('--clear',    action='store_true', help='clear all static route')
@@ -237,4 +288,10 @@ if __name__ == "__main__":
         process_extra_ip(args)
         exit(0)
     process_extra_ip(args)
-    start_zmq_server(args,None,None)
+    if args.zmq is not None:
+        start_zmq_server(args,None,None)
+    elif args.socket is not None:
+        start_socket_server(args, None, None)
+    else:
+        logging.error("not start any server, you must special ether zmq or socket server proto")
+        exit(-1)

@@ -52,7 +52,10 @@
 
 static int verbose_screen;
 char operator_script[4096];
-char zmq_server[256];
+char zmq_server[256] = {0};
+char udp_server[256] = {0};
+struct sockaddr_in udp_server_addr;
+int udp_server_fd = 0;
 void* zmq_client = NULL;
 int capget(struct __user_cap_header_struct *header, struct __user_cap_data_struct *cap);
 int capset(struct __user_cap_header_struct *header, struct __user_cap_data_struct *cap);
@@ -148,6 +151,7 @@ static void _help(void)
 		"  -x            verbose screen.\n"
 		"  -v            dispaly version.\n"
 		"  -z            zmq connect address\n"
+        "  -u            udp connect address, Example: udp://127.0.0.1:1234\n"
         "  -O [script]   when match ipset, call script. call format is: IP IPSET DOMAIN TIMEOUT IPV4/IPV6 OPERATOR, for example: 140.82.112.0 ipset live.github.com 120 ipv4 add\n"
 		"  -h            show this help message.\n"
 
@@ -347,6 +351,38 @@ static const char *_smartdns_log_path(void)
 	return logfile;
 }
 
+
+static int _udp_server_connect(void){
+	if (strlen(udp_server) > 0 ) {
+		char udp_prefix[] = "udp://";
+		if(strncmp(udp_server,udp_prefix,strlen(udp_prefix)) == 0){
+			char udp_server_ip[256] = {0};
+			int udp_server_port = 34321;
+			strncpy(udp_server_ip,&udp_server[strlen(udp_prefix)],sizeof(udp_server_ip));
+			char* sim = strstr(udp_server_ip,":");
+			if( sim != NULL){
+				sim[0] = '\0';
+				sim = sim + 1;
+				udp_server_port = atoi(sim);
+			}
+			if ((udp_server_fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+			{
+				tlog(TLOG_INFO,("socket()"));
+				udp_server_fd = 0;
+			}
+			/* Set up the server name */
+			udp_server_addr.sin_family      = AF_INET;            /* Internet Domain    */
+			udp_server_addr.sin_port        = htons(udp_server_port);               /* Server Port        */
+			udp_server_addr.sin_addr.s_addr = inet_addr(udp_server_ip); /* Server's Address   */
+		}else{
+			fprintf(stderr,"unable parse udp_server: %s\n",udp_server);
+			return 0;
+		}
+		tlog(TLOG_INFO, "create udp client fd success: %s", udp_server);
+	}
+	return 0;
+}
+
 static int _zmq_sever_connect(void){
 	if (strlen(zmq_server) > 0 ) {
 		char ipc_prefix[] = "ipc://";
@@ -386,6 +422,7 @@ static int _smartdns_init(void)
 	tlog(TLOG_NOTICE, "smartdns starting...(Copyright (C) Nick Peng <pymumu@gmail.com>, build: %s %s)", __DATE__,
 		 __TIME__);
 	_zmq_sever_connect();
+	_udp_server_connect();
 	if (_smartdns_init_ssl() != 0) {
 		tlog(TLOG_ERROR, "init ssl failed.");
 		goto errout;
@@ -560,7 +597,7 @@ int main(int argc, char *argv[])
 	sigemptyset(&empty_sigblock);
 	sigprocmask(SIG_SETMASK, &empty_sigblock, NULL);
 
-	while ((opt = getopt(argc, argv, "fhc:p:SvxN:O:z:")) != -1) {
+	while ((opt = getopt(argc, argv, "fhc:p:SvxN:O:z:u:")) != -1) {
 		switch (opt) {
 		case 'f':
 			is_foreground = 1;
@@ -573,6 +610,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'z':
 			snprintf(zmq_server, sizeof(zmq_server), "%s", optarg);
+			break;
+		case 'u':
+			snprintf(udp_server, sizeof(udp_server), "%s", optarg);
 			break;
 		case 'O':
 			snprintf(operator_script, sizeof(operator_script), "%s", optarg);
