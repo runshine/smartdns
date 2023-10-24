@@ -9,13 +9,16 @@ build:
 	make -C ../src
 
 override_dh_systemd_enable:
-	dh_systemd_enable --name=smartdns 
+	dh_systemd_enable --name=smartdns
+	dh_systemd_enable --name=smartdns-server
 
 override_dh_installinit:
-	dh_installinit --name=smartdns 
+	dh_installinit --name=smartdns
+	dh_installinit --name=smartdns-server
 
 override_dh_installdeb:
 	dh_installdeb
 	cp ../systemd/smartdns.service ${CURDIR}/debian/
+	cp ../systemd/smartdns-server.service ${CURDIR}/debian/
 
 

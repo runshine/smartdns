@@ -51,8 +51,10 @@ build()
 
 	cp $SMARTDNS_DIR/etc/smartdns/smartdns.conf  $ROOT/etc/smartdns/
 	cp $SMARTDNS_DIR/etc/default/smartdns  $ROOT/etc/default/
-	cp $SMARTDNS_DIR/systemd/smartdns.service $ROOT/lib/systemd/system/ 
+	cp $SMARTDNS_DIR/systemd/smartdns.service $ROOT/lib/systemd/system/
+	cp $SMARTDNS_DIR/systemd/smartdns-server.service $ROOT/lib/systemd/system/
 	cp $SMARTDNS_DIR/src/smartdns $ROOT/usr/sbin
+	cp $SMARTDNS_DIR/dns-server.py $ROOT/usr/sbin
 	if [ $? -ne 0 ]; then
 		echo "copy smartdns file failed."
 		return 1
