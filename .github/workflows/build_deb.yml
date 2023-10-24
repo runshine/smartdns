@@ -1,4 +1,4 @@
-name: build_deb
+name: build_x86_deb
 
 on: push
 
@@ -11,12 +11,10 @@ jobs:
       - name: Install czmq
         run: sudo apt-get install -y libczmq-dev
 
-      - uses: singingwolfboy/build-dpkg-buster@v1
-        id: build
-        with:
-          args: --unsigned-source --unsigned-changes
+      - name: build-package
+        run: cd package && ./build-pkg.sh --platform debian --arch x86-64
 
-      - uses: actions/upload-artifact@v1
-        with:
-          name: ${{ steps.build.outputs.filename }}
-          path: ${{ steps.build.outputs.filename }}
+#      - uses: actions/upload-artifact@v1
+#        with:
+#          name: ${{ steps.build.outputs.filename }}
+#          path: ${{ steps.build.outputs.filename }}
