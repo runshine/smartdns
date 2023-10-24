@@ -5,6 +5,10 @@ on: push
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [ amd64, arm64 ]
     steps:
       - uses: actions/checkout@v4
 
@@ -16,5 +20,5 @@ jobs:
 
       - uses: actions/upload-artifact@v3
         with:
-          name: smartdns-latest-x64
+          name: smartdns-latest
           path: package/smartdns.*.deb
