@@ -17,7 +17,7 @@
 BIN=smartdns 
 OBJS_LIB=lib/rbtree.o lib/art.o lib/bitops.o lib/radix.o lib/conf.o lib/cJSON.o lib/cJSON_Utils.o
 OBJS=smartdns.o fast_ping.o dns_client.o dns_server.o dns.o util.o tlog.o dns_conf.o dns_cache.o http_parse.o $(OBJS_LIB)
-STATIC=no
+STATIC=yes
 # cflags
 ifndef CFLAGS
 CFLAGS =-O2 -g -Wall -Wstrict-prototypes -fno-omit-frame-pointer -Wstrict-aliasing -funwind-tables -Wmissing-prototypes -Wshadow -Wextra -Wno-unused-parameter -Wno-implicit-fallthrough
@@ -33,9 +33,9 @@ override CXXFLAGS +=-Iinclude
 
 # ldflags
 ifeq ($(STATIC), yes)
-override LDFLAGS += -lzmq -lssl -lcrypto -Wl,--whole-archive -lpthread -Wl,--no-whole-archive -ldl -static
+override LDFLAGS += -lssl -lcrypto -lpthread -ldl -static
 else
-override LDFLAGS += -lzmq -lssl -lcrypto -lpthread -ldl
+override LDFLAGS += -lssl -lcrypto -lpthread -ldl
 endif
 
 ifdef WITH_NFTSET

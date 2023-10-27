@@ -45,7 +45,6 @@
 #include <sys/types.h>
 #include "cJSON.h"
 #include "cJSON_Utils.h"
-#include <czmq.h>
 
 #define DNS_MAX_EVENTS 256
 #define IPV6_READY_CHECK_TIME 180
@@ -1519,25 +1518,6 @@ static cJSON* create_log_json(struct dns_server_post_context *context){
 	return result;
 }
 
-extern void* zmq_client;
-static int _dns_server_setup_zmq(struct dns_server_post_context *context)
-{
-	if (context->ip_num <= 0 || zmq_client == NULL) {
-		return 0;
-	}
-	char zmq_buf[8192] = {0};
-	cJSON* result = create_log_json(context);
-	cJSON_PrintPreallocated(result,zmq_buf,sizeof(zmq_buf),1);
-	zmq_msg_t msg;
-	zmq_msg_init_size(&msg,strlen(zmq_buf));
-	strncpy(zmq_msg_data(&msg),zmq_buf,strlen(zmq_buf));
-	zmq_msg_send(&msg,zmq_client,0);
-	zmq_msg_recv(&msg,zmq_client,0);
-	zmq_msg_close(&msg);
-	cJSON_Delete(result);
-	return 0;
-}
-
 extern struct sockaddr_in udp_server_addr;
 extern int udp_server_fd;
 static int _dns_server_setup_udp_server(struct dns_server_post_context *context)
@@ -1587,7 +1567,6 @@ static int _dns_request_post(struct dns_server_post_context *context)
 
 	/* setup ipset */
 	_dns_server_setup_ipset_nftset_packet(context);
-	_dns_server_setup_zmq(context);
 	_dns_server_setup_udp_server(context);
 	if (context->do_reply == 0) {
 		return 0;

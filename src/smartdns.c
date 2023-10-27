@@ -43,7 +43,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <ucontext.h>
-#include <czmq.h>
 
 #define MAX_LINE_LEN 1024
 #define MAX_KEY_LEN 64
@@ -370,6 +369,7 @@ static int _udp_server_connect(void){
 				tlog(TLOG_INFO,("socket()"));
 				udp_server_fd = 0;
 			}
+			tlog(TLOG_INFO,"try to connect to udp server: %s:%d",udp_server_ip,udp_server_port);
 			/* Set up the server name */
 			udp_server_addr.sin_family      = AF_INET;            /* Internet Domain    */
 			udp_server_addr.sin_port        = htons(udp_server_port);               /* Server Port        */
@@ -379,28 +379,6 @@ static int _udp_server_connect(void){
 			return 0;
 		}
 		tlog(TLOG_INFO, "create udp client fd success: %s", udp_server);
-	}
-	return 0;
-}
-
-static int _zmq_sever_connect(void){
-	if (strlen(zmq_server) > 0 ) {
-		char ipc_prefix[] = "ipc://";
-		if(strncmp(zmq_server,ipc_prefix,strlen(ipc_prefix)) == 0){
-			if(access(&zmq_server[strlen(ipc_prefix)],O_RDONLY) != 0){
-				fprintf(stderr,"unable access ipc zeroMQ file, ignore zeroMQ");
-				return 0;
-			}
-		}
-		void *context = zmq_init(1);
-		zmq_client = zmq_socket(context, ZMQ_REQ);
-		int ret = zmq_connect(zmq_client, zmq_server);
-		if (ret != 0) {
-			fprintf(stderr, "connect to zmq server failed, errno: %d\n", errno);
-			fflush(stderr);
-			exit(-1);
-		}
-		tlog(TLOG_INFO, "connect to zmq server success: %s", zmq_server);
 	}
 	return 0;
 }
@@ -421,7 +399,6 @@ static int _smartdns_init(void)
 
 	tlog(TLOG_NOTICE, "smartdns starting...(Copyright (C) Nick Peng <pymumu@gmail.com>, build: %s %s)", __DATE__,
 		 __TIME__);
-	_zmq_sever_connect();
 	_udp_server_connect();
 	if (_smartdns_init_ssl() != 0) {
 		tlog(TLOG_ERROR, "init ssl failed.");

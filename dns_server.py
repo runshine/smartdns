@@ -6,14 +6,11 @@ import logging
 import os
 import re
 import subprocess
-import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 import socket
 from logging.handlers import RotatingFileHandler
 
-import zmq
 import pymongo
 import operator
 from readerwriterlock import rwlock
@@ -81,7 +78,6 @@ def vtysh_ipv4_remove_multi_static_rotue(static_net_list):
     stdout, stderr = process.communicate(send_data.encode('utf-8'),timeout=30)
 
 
-
 def add_static_route(dns_request, domain_config):
     ipv4_gw = domain_config['ipv4_gw']
     for ipv4_record in dns_request['ipv4']:
@@ -98,6 +94,7 @@ def add_dns_record_to_db(record_collection,dns_request, domain_config):
 def process_dns_request(record_collection,config,dns_request_json):
     try:
         dns_request = json.loads(dns_request_json)
+        logging.debug("recv a dns request: {}".format(dns_request))
         domain_config = get_domain_config(dns_request['request-domain'],config)
         if domain_config is None:
             return
@@ -179,18 +176,6 @@ def config_dns_route(dns_ip):
     vtysh_ipv4_add_one_static_route(dns_ip +"/32", get_default_ipv4_gw())
 
 
-def start_zmq_server(args,record_collection,config_collection):
-    zmq_socket = zmq.Context().socket(zmq.REP)
-    logging.info("Start zmq server: addr: {}".format(args.zmq))
-    zmq_socket.bind(args.zmq)
-    config = read_config_collection(args,config_collection)
-    _thread.start_new_thread(update_config_timer,(args,config,config_collection))
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        while True:
-            messages = zmq_socket.recv_string()
-            executor.submit(process_dns_request,record_collection,config,messages)
-            zmq_socket.send_string("ok")
-
 def start_socket_server(args,record_collection,config_collection):
     socket_proto_url = args.socket
     socket_proto = re.findall("\s*(.+)://\d+\.\d+\.\d+\.\d+",socket_proto_url)
@@ -234,7 +219,6 @@ def start_socket_server(args,record_collection,config_collection):
             executor.submit(process_dns_request,record_collection,config,messages)
 
 
-
 def connect_to_mongodb(url):
     myclient = pymongo.MongoClient(url)
     dblist = myclient.list_database_names()
@@ -245,6 +229,7 @@ def connect_to_mongodb(url):
 
 
 def process_ip_file(ip_file):
+    logging.info("process ip file: {}".format(ip_file))
     ipv4_gw = get_default_ipv4_gw()
     with open(ip_file) as f:
         for line in f.readlines():
@@ -259,15 +244,20 @@ def process_ip_file(ip_file):
 def process_extra_ip(args):
     if args.extra is not None and len(args.extra) != 0:
         if not os.path.exists(args.extra):
-            logging.error("failed to open extra file, not exist: {}".format(args.extra))
-            exit(-1)
-        process_ip_file(args.extra)
+            logging.error("failed to open extra file, not exist: {}, ignore it".format(args.extra))
+            return
+        if os.path.isfile(args.extra):
+            process_ip_file(args.extra)
+        elif os.path.isdir(args.extra):
+            for file in os.listdir(args.extra):
+                ip_file = os.path.join(args.extra,file)
+                if os.path.isfile(ip_file):
+                    process_ip_file(ip_file)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log',      metavar='l', type=str, required=False, help='log file')
-    parser.add_argument('--zmq',      metavar='z', type=str, required=False,  help='zmq server url, example: ipc:///tmp/dns_server, tcp://*.1234')
     parser.add_argument('--mongodb',  metavar='m', type=str, required=True,  help='mongodb url, example: mongodb://localhost:27017/')
     parser.add_argument('--node_id',  metavar='n', type=str, required=True,  help='node id, example: 10.10.8.1')
     parser.add_argument('--dns',      metavar='d', type=str, required=True,  help='dns IP, example: 8.8.8.8')
@@ -294,9 +284,7 @@ if __name__ == "__main__":
         process_extra_ip(args)
         exit(0)
     process_extra_ip(args)
-    if args.zmq is not None:
-        start_zmq_server(args,None,None)
-    elif args.socket is not None:
+    if args.socket is not None:
         start_socket_server(args, None, None)
     else:
         logging.error("not start any server, you must special ether zmq or socket server proto")

@@ -31,7 +31,9 @@ build()
 	cp package/windows $PKG_ROOT/smartdns/package/ -a
 	cp etc *.md LICENSE package/linux/install $PKG_ROOT/smartdns/ -a
 	cp systemd/smartdns.service $PKG_ROOT/smartdns/systemd
+	cp systemd/smartdns-server.service $PKG_ROOT/smartdns/systemd
 	cp src/smartdns $PKG_ROOT/smartdns/usr/sbin -a
+	cp dns_server.py $PKG_ROOT/smartdns/usr/sbin -a
 	chmod +x $PKG_ROOT/smartdns/install
 
 	if [ $? -ne 0 ]; then
