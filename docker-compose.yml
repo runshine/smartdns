@@ -19,7 +19,7 @@ services:
       - ./data/smartdns:/etc/smartdns
     restart: unless-stopped
   smartdns-server:
-    image: "runshine0819/smartdns-server:latest"
+    image: "runshine0819/smartdns-server:${ARCH}"
     container_name: smartdns-server
     hostname: smartdns-server
     network_mode: host
