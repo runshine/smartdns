@@ -1,4 +1,4 @@
-name: build_x86_deb
+name: build_deb
 
 on: push
 
