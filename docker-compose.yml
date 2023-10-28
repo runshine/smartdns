@@ -8,7 +8,7 @@ services:
     volumes:
       - ./data/database/configdb:/data/configdb
       - ./data/database/db:/data/db
-    restart: unless-stopped
+    restart: always
   smartdns:
     image: "runshine0819/smartdns:latest"
     container_name: smartdns
@@ -17,7 +17,9 @@ services:
     network_mode: host
     volumes:
       - ./data/smartdns:/etc/smartdns
-    restart: unless-stopped
+    restart: always
+    depends_on:
+      - smartdns-server
   smartdns-server:
     image: "runshine0819/smartdns-server:latest"
     container_name: smartdns-server
@@ -31,4 +33,6 @@ services:
     volumes:
       - ./data/dnsmasq.d:/etc/dnsmasq.d
       - ./data/frr:/etc/frr
-    restart: unless-stopped
+    restart: always
+    depends_on:
+      - mongodb
