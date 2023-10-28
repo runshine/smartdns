@@ -19,3 +19,4 @@ jobs:
         with:
           name: smartdns-latest
           path: package/smartdns.*.deb
+
