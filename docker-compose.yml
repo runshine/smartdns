@@ -10,7 +10,7 @@ services:
       - ./data/database/db:/data/db
     restart: unless-stopped
   smartdns:
-    image: "runshine0819/smartdns:${ARCH}"
+    image: "runshine0819/smartdns:latest"
     container_name: smartdns
     hostname: smartdns
     command: ["/usr/sbin/smartdns","-f","-x","-u","udp://127.0.0.1:12345"]
@@ -19,7 +19,7 @@ services:
       - ./data/smartdns:/etc/smartdns
     restart: unless-stopped
   smartdns-server:
-    image: "runshine0819/smartdns-server:${ARCH}"
+    image: "runshine0819/smartdns-server:latest"
     container_name: smartdns-server
     hostname: smartdns-server
     network_mode: host
