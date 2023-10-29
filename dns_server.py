@@ -19,16 +19,32 @@ from readerwriterlock import rwlock
 config_rw_lock = rwlock.RWLockFair()
 
 
+def get_default_ipv4_gw():
+    default_gw_outputs = ''.join(os.popen('ip route |grep default').readlines())
+    default_gw = re.findall('\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\s+',default_gw_outputs)
+    if len(default_gw) != 0:
+        default_gw = default_gw[0]
+        return default_gw
+    return None
+
+
+system_default_gw = get_default_ipv4_gw()
+
+
 def get_domain_config(domain,config_array):
+    global system_default_gw
     possible_domain_config = []
     read_marker = config_rw_lock.gen_rlock()
     read_marker.acquire()
-    for domain_config in config_array:
-        if domain_config['domain'] == domain:
-            read_marker.release()
-            return domain_config
-        if domain.endswith('.'+ domain_config['domain']):
-            possible_domain_config.append((len(domain_config['domain'])+1,domain_config))
+    if config_array is None:
+        return {'domain':domain,'ipv4_gw':system_default_gw}
+    else:
+        for domain_config in config_array:
+            if domain_config['domain'] == domain:
+                read_marker.release()
+                return domain_config
+            if domain.endswith('.'+ domain_config['domain']):
+                possible_domain_config.append((len(domain_config['domain'])+1,domain_config))
     read_marker.release()
     max_len = 0
     for domain_len,domain_config in possible_domain_config:
@@ -108,15 +124,6 @@ def process_dns_request(record_collection,config,dns_request_json):
 def read_config_collection(args,config_collection):
     #return config_collection.find({'node':args.node_id})
     return read_config_from_dnsmasq('/etc/dnsmasq.d/')
-
-
-def get_default_ipv4_gw():
-    default_gw_outputs = ''.join(os.popen('ip route |grep default').readlines())
-    default_gw = re.findall('\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\s+',default_gw_outputs)
-    if len(default_gw) != 0:
-        default_gw = default_gw[0]
-        return default_gw
-    return None
 
 
 def read_config_from_dnsmasq(dnsmasq_config_dir):
@@ -211,8 +218,13 @@ def start_socket_server(args,record_collection,config_collection):
         logging.error("current not support socket proto: {}".format(socket_proto_url))
         exit(-1)
 
-    config = read_config_collection(args,config_collection)
-    _thread.start_new_thread(update_config_timer,(args,config,config_collection))
+    if args.default is not True:
+        logging.info("Use as config dns server, config dis is: /etc/dnsmasq.d/")
+        config = read_config_collection(args,config_collection)
+        _thread.start_new_thread(update_config_timer,(args,config,config_collection))
+    else:
+        logging.info("Use as all default dns server")
+        config = None
     with ThreadPoolExecutor(max_workers=10) as executor:
         while True:
             messages = recv_message()
@@ -259,11 +271,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log',      metavar='l', type=str, required=False, help='log file')
     parser.add_argument('--mongodb',  metavar='m', type=str, required=True,  help='mongodb url, example: mongodb://localhost:27017/')
-    parser.add_argument('--node_id',  metavar='n', type=str, required=True,  help='node id, example: 10.10.8.1')
+    parser.add_argument('--node_id',  metavar='n', type=str, required=True,  help='node id, example: 10.10.8.1, current not use')
     parser.add_argument('--dns',      metavar='d', type=str, required=True,  help='dns IP, example: 8.8.8.8')
     parser.add_argument('--socket',   metavar='u', type=str, required=False,  help='server proto, current support udp, example: udp://127.0.0.1:1234')
     parser.add_argument('--extra',    metavar='e', type=str, required=False, help='extra_ip_net list file')
     parser.add_argument('--debug',    action='store_true', help='config if debug')
+    parser.add_argument('--default',  action='store_true', help='use as all default with any dns request, ignore /etc/dnsmasq.d config')
     parser.add_argument('--clear',    action='store_true', help='clear all static route')
     args = parser.parse_args()
     if args.debug:
@@ -280,7 +293,8 @@ if __name__ == "__main__":
         logging.basicConfig(format=logFormatter, level=log_level)
 
     if args.clear:
-        vtysh_clear_all_static_route(args.dns)
+        if 'dns' in args.keys():
+            vtysh_clear_all_static_route(args.dns)
         process_extra_ip(args)
         exit(0)
     process_extra_ip(args)
