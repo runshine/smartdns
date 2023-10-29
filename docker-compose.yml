@@ -29,7 +29,7 @@ services:
       - NET_ADMIN
       - NET_RAW
       - CAP_SYS_ADMIN
-    command:  ["bash","-c","/dns_server.py --debug --socket=udp://127.0.0.1:12345 --extra=/opt/ --node_id=10.11.200.100 --dns=1.1.1.1 --mongodb=mongodb:///smartdns & /usr/lib/frr/docker-start"]
+    command:  ["bash","-c","/dns_server.py --default --debug --socket=udp://127.0.0.1:12345 --extra=/opt/ --node_id=10.11.200.100 --dns=1.1.1.1 --mongodb=mongodb:///smartdns & /usr/lib/frr/docker-start"]
     volumes:
       - ./data/dnsmasq.d:/etc/dnsmasq.d
       - ./data/frr:/etc/frr
