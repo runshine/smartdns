@@ -36,7 +36,7 @@ jobs:
           push: true
           tags: |
             runshine0819/smartdns:latest
-            ghcr.io/runshine/app:latest
+            ghcr.io/runshine/smartdns:latest
           file: smartdns.dockerfile
 
       - name: Build and push smartdns-server
