@@ -56,6 +56,13 @@ jobs:
           push: true
           tags: runshine/smartdns:latest
           file: smartdns.dockerfile
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/runshine/smartdns-server:latest
+
       - name: Build and push smartdns-server
         uses: docker/build-push-action@v5
         with:
