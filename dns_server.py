@@ -96,9 +96,14 @@ def vtysh_ipv4_remove_multi_static_rotue(static_net_list):
 
 def add_static_route(dns_request, domain_config):
     ipv4_gw = domain_config['ipv4_gw']
-    for ipv4_record in dns_request['ipv4']:
-        vtysh_ipv4_add_one_static_route(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw)
-        logging.info("[vtysh]: add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_record['domain']))
+    if 'ipv4' in dns_request.keys():
+        for ipv4_record in dns_request['ipv4']:
+            vtysh_ipv4_add_one_static_route(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw)
+            logging.info("[vtysh]: ip add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_record['domain']))
+    if 'ipv4_net' in dns_request.keys():
+        for ipv4_net_record in dns_request['ipv4_net']:
+            vtysh_ipv4_add_one_static_route(ipv4_net_record['addr'],ipv4_gw)
+            logging.info("[vtysh]: net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_net_record['addr'],ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_net_record['domain']))
     for ipv6_record in dns_request['ipv6']:
         pass
 
@@ -111,7 +116,16 @@ def process_dns_request(record_collection,config,dns_request_json):
     try:
         dns_request = json.loads(dns_request_json)
         logging.debug("recv a dns request: {}".format(dns_request))
-        domain_config = get_domain_config(dns_request['request-domain'],config)
+        if 'request-domain' in dns_request.keys():
+            #means this is a dns request
+            domain_config = get_domain_config(dns_request['request-domain'],config)
+        elif 'request-ip' in dns_request.keys():
+            #means this is a ip request
+            domain_config = {'domain':"*",'ipv4_gw':system_default_gw}
+            dns_request['request-domain'] = "*"
+        else:
+            logging.error("unsupport request type: {}".format(dns_request))
+            domain_config = None
         if domain_config is None:
             return
         else:
