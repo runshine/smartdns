@@ -32,7 +32,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm
+          platforms: linux/amd64,linux/arm64,linux/s390x,linux/arm/v7,linux/arm/v6
           push: true
           tags: |
             runshine0819/smartdns:latest
@@ -43,7 +43,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64,linux/arm
+          platforms: linux/amd64,linux/arm64,linux/s390x,linux/arm/v7,linux/arm/v6
           push: true
           tags: |
             runshine0819/smartdns-server:latest
