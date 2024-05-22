@@ -3,7 +3,7 @@ COPY dns_server.py /
 RUN sed -i 's/https/http/' /etc/apk/repositories
 RUN apk --no-cache --update upgrade && apk --no-cache add ca-certificates
 RUN apk add python3 py3-pip
-RUN pip3 install pymongo readerwriterlock
+RUN pip3 install pymongo readerwriterlock --break-system-packages
 
 VOLUME "/etc/dnsmasq.d/"
 VOLUME "/opt"
