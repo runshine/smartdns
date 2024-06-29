@@ -24,11 +24,22 @@ def get_default_ipv4_gw():
     default_gw = re.findall('\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\s+',default_gw_outputs)
     if len(default_gw) != 0:
         default_gw = default_gw[0]
+        print("Get System Default IPV4 GW: {}".format(default_gw))
         return default_gw
+    print("Unable Get System Default IPV4 GW")
+    return None
+
+def get_default_ipv6_gw():
+    default_gw_outputs = ''.join(os.popen("ip -6 route | grep default | egrep -o '([a-f0-9:]+:+)+[a-f0-9]+'").readlines()).lstrip()
+    if len(default_gw_outputs) != 0:
+        print("Get System Default IPV6 GW: {}".format(default_gw_outputs))
+        return default_gw_outputs
+    print("Unable Get System Default IPV6 GW")
     return None
 
 
 system_default_gw = get_default_ipv4_gw()
+system_default_ipv6_gw = get_default_ipv6_gw()
 
 
 def get_domain_config(domain,config_array):
@@ -37,7 +48,7 @@ def get_domain_config(domain,config_array):
     read_marker = config_rw_lock.gen_rlock()
     read_marker.acquire()
     if config_array is None:
-        return {'domain':domain,'ipv4_gw':system_default_gw}
+        return {'domain':domain,'ipv4_gw':system_default_gw,"ipv6_gw":system_default_ipv6_gw}
     else:
         for domain_config in config_array:
             if domain_config['domain'] == domain:
@@ -59,6 +70,9 @@ def get_domain_config(domain,config_array):
 def ipv4_addr_to_net(ipv4_addr):
     return ipv4_addr[:ipv4_addr.rfind('.')] + ".0/24"
 
+def ipv6_addr_to_net(ipv6_addr):
+    return ipv6_addr + "/64"
+
 
 def vtysh_list_static_route():
     vtysh_route_output = ''.join(os.popen('echo "show ip route static" | vtysh | grep -v Codes|grep S|grep -v OSPF|grep -v SHARP|grep -v inactive').readlines()).strip()
@@ -73,6 +87,11 @@ def vtysh_list_static_route():
 
 def vtysh_ipv4_add_one_static_route(static_net, ipv4_gw):
     vtysh_static_route_cmd = 'ip route {} {}'.format(static_net, ipv4_gw)
+    subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
+
+
+def vtysh_ipv6_add_one_static_route(static_net, ipv6_gw):
+    vtysh_static_route_cmd = 'ipv6 route {} {}'.format(static_net, ipv6_gw)
     subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
 
 
@@ -95,17 +114,35 @@ def vtysh_ipv4_remove_multi_static_rotue(static_net_list):
 
 
 def add_static_route(dns_request, domain_config):
-    ipv4_gw = domain_config['ipv4_gw']
-    if 'ipv4' in dns_request.keys():
-        for ipv4_record in dns_request['ipv4']:
-            vtysh_ipv4_add_one_static_route(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw)
-            logging.info("[vtysh]: ip add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_record['domain']))
-    if 'ipv4_net' in dns_request.keys():
-        for ipv4_net_record in dns_request['ipv4_net']:
-            vtysh_ipv4_add_one_static_route(ipv4_net_record['addr'],ipv4_gw)
-            logging.info("[vtysh]: net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_net_record['addr'],ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_net_record['domain']))
-    for ipv6_record in dns_request['ipv6']:
-        pass
+    try:
+        if 'ipv4_gw' in domain_config.keys():
+            ipv4_gw = domain_config['ipv4_gw']
+            if ipv4_gw is not None and len(ipv4_gw) != 0:
+                if 'ipv4' in dns_request.keys():
+                    for ipv4_record in dns_request['ipv4']:
+                        vtysh_ipv4_add_one_static_route(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw)
+                        logging.info("[vtysh]: ip add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_addr_to_net(ipv4_record['addr']),ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_record['domain']))
+                if 'ipv4_net' in dns_request.keys():
+                    for ipv4_net_record in dns_request['ipv4_net']:
+                        vtysh_ipv4_add_one_static_route(ipv4_net_record['addr'],ipv4_gw)
+                        logging.info("[vtysh]: ipv4 net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_net_record['addr'],ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_net_record['domain']))
+    except Exception as e:
+        print("Error happened in add ipv4 static route, error: " + str(e))
+
+    try:
+        if 'ipv6_gw' in domain_config.keys():
+            ipv6_gw = domain_config['ipv6_gw']
+            if ipv6_gw is not None and len(ipv6_gw) != 0:
+                if 'ipv6' in dns_request.keys():
+                    for ipv6_record in dns_request['ipv6']:
+                        vtysh_ipv6_add_one_static_route(ipv6_addr_to_net(ipv6_record['addr']),ipv6_gw)
+                        logging.info("[vtysh]: ipv6 add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv6_addr_to_net(ipv6_record['addr']),ipv6_gw,dns_request['request-domain'],domain_config['domain'],ipv6_record['domain']))
+                    if 'ipv6_net' in dns_request.keys():
+                        for ipv6_net_record in dns_request['ipv6_net']:
+                            vtysh_ipv6_add_one_static_route(ipv6_net_record['addr'],ipv6_gw)
+                            logging.info("[vtysh]: ipv6 net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv6_net_record['addr'],ipv6_gw,dns_request['request-domain'],domain_config['domain'],ipv6_net_record['domain']))
+    except Exception as e:
+        print("Error happened in add ipv6 static route, error: " + str(e))
 
 
 def add_dns_record_to_db(record_collection,dns_request, domain_config):
@@ -121,7 +158,7 @@ def process_dns_request(record_collection,config,dns_request_json):
             domain_config = get_domain_config(dns_request['request-domain'],config)
         elif 'request-ip' in dns_request.keys():
             #means this is a ip request
-            domain_config = {'domain':"*",'ipv4_gw':system_default_gw}
+            domain_config = {'domain':"*",'ipv4_gw':system_default_gw,"ipv6_gw":system_default_ipv6_gw}
             dns_request['request-domain'] = "*"
         else:
             logging.error("unsupport request type: {}".format(dns_request))
@@ -156,7 +193,7 @@ def read_config_from_dnsmasq(dnsmasq_config_dir):
                         if len(host) == 0:
                             continue
                         host = host[0]
-                        config_array.append({'domain':host,'ipv4_gw':gw})
+                        config_array.append({'domain':host,'ipv4_gw':gw,'ipv6_gw':system_default_ipv6_gw})
     return config_array
 
 

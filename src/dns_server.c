@@ -1459,8 +1459,8 @@ static cJSON* create_log_json(struct dns_server_post_context *context){
 	char ipv6_addr[128] = {0};
 	cJSON* result = cJSON_CreateObject();
 	cJSON* ipv4_record_array = cJSON_CreateArray();;
-	cJSON* ipv6_record_array = cJSON_CreateObject();
-	cJSON* cname_record_array = cJSON_CreateObject();
+	cJSON* ipv6_record_array = cJSON_CreateArray();
+	cJSON* cname_record_array = cJSON_CreateArray();
 	for (j = 1; j < DNS_RRS_END; j++) {
 		rrs = dns_get_rrs_start(context->packet, j, &rr_count);
 		for (i = 0; i < rr_count && rrs; i++, rrs = dns_get_rrs_next(context->packet, rrs)) {
