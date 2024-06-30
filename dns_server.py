@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 import socket
@@ -38,8 +39,9 @@ def get_default_ipv6_gw():
     return None
 
 
-system_default_gw = get_default_ipv4_gw()
-system_default_ipv6_gw = get_default_ipv6_gw()
+system_default_gw = None
+system_default_ipv6_gw = None
+
 if "IP_RT_TABLE_ID" in os.environ.keys():
     ip_route_table_id = str(os.environ["IP_RT_TABLE_ID"])
 else:
@@ -353,8 +355,10 @@ if __name__ == "__main__":
         fileHandler.setFormatter(logging.Formatter(logFormatter))
         logging.basicConfig(format=logFormatter, level=log_level,handlers=[fileHandler])
     else:
-        logging.basicConfig(format=logFormatter, level=log_level)
+        logging.basicConfig(format=logFormatter, level=log_level,handlers=[logging.StreamHandler(sys.stdout)])
     logging.info("start smartdns-server python server ,log_level: {}".format(log_level))
+    system_default_gw = get_default_ipv4_gw()
+    system_default_ipv6_gw = get_default_ipv6_gw()
     if args.clear:
         if 'dns' in args.keys():
             vtysh_clear_all_static_route(args.dns)
