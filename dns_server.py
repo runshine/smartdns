@@ -40,10 +40,14 @@ def get_default_ipv6_gw():
 
 system_default_gw = get_default_ipv4_gw()
 system_default_ipv6_gw = get_default_ipv6_gw()
+if "IP_RT_TABLE_ID" in os.environ.keys():
+    ip_route_table_id = str(os.environ["IP_RT_TABLE_ID"])
+else:
+    ip_route_table_id = "254"
 
 
 def get_domain_config(domain,config_array):
-    global system_default_gw
+    global system_default_gw,system_default_ipv6_gw
     possible_domain_config = []
     read_marker = config_rw_lock.gen_rlock()
     read_marker.acquire()
@@ -86,29 +90,33 @@ def vtysh_list_static_route():
 
 
 def vtysh_ipv4_add_one_static_route(static_net, ipv4_gw):
-    vtysh_static_route_cmd = 'ip route {} {}'.format(static_net, ipv4_gw)
+    global ip_route_table_id
+    vtysh_static_route_cmd = 'ip route {} {} table {}'.format(static_net, ipv4_gw,ip_route_table_id)
     subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
 
 
 def vtysh_ipv6_add_one_static_route(static_net, ipv6_gw):
-    vtysh_static_route_cmd = 'ipv6 route {} {}'.format(static_net, ipv6_gw)
+    global ip_route_table_id
+    vtysh_static_route_cmd = 'ipv6 route {} {} table {}'.format(static_net, ipv6_gw,ip_route_table_id)
     subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
 
 
 def vtysh_ipv4_add_multi_static_route(static_net_list, ipv4_gw):
+    global ip_route_table_id
     process=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     send_data = "config terminal\n"
     for static_net in static_net_list:
-        send_data = send_data + "ip route {} {}\n".format(static_net, ipv4_gw)
+        send_data = send_data + "ip route {} {} table {}\n".format(static_net, ipv4_gw,ip_route_table_id)
     send_data = send_data + "quit\n" + "quit\n"
     stdout, stderr = process.communicate(send_data.encode('utf-8'),timeout=30)
 
 
 def vtysh_ipv4_remove_multi_static_rotue(static_net_list):
+    global ip_route_table_id
     process=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     send_data = "config ter\n"
     for static_net in static_net_list:
-        send_data = send_data + "no ip route {} {}\n".format(static_net[0], static_net[1])
+        send_data = send_data + "no ip route {} {} table {}\n".format(static_net[0], static_net[1],ip_route_table_id)
     send_data = send_data + "quit\n" + "quit\n"
     stdout, stderr = process.communicate(send_data.encode('utf-8'),timeout=30)
 
@@ -150,6 +158,7 @@ def add_dns_record_to_db(record_collection,dns_request, domain_config):
 
 
 def process_dns_request(record_collection,config,dns_request_json):
+    global system_default_gw,system_default_ipv6_gw
     try:
         dns_request = json.loads(dns_request_json)
         logging.debug("recv a dns request: {}".format(dns_request))
