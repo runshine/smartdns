@@ -354,7 +354,7 @@ if __name__ == "__main__":
         logging.basicConfig(format=logFormatter, level=log_level,handlers=[fileHandler])
     else:
         logging.basicConfig(format=logFormatter, level=log_level)
-
+    logging.info("start smartdns-server python server")
     if args.clear:
         if 'dns' in args.keys():
             vtysh_clear_all_static_route(args.dns)
