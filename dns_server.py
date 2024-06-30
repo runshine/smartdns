@@ -285,10 +285,13 @@ def start_socket_server(args,record_collection,config_collection):
     else:
         logging.info("Use as all default dns server")
         config = None
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        while True:
-            messages = recv_message()
-            executor.submit(process_dns_request,record_collection,config,messages)
+    # with ThreadPoolExecutor(max_workers=10) as executor:
+    #     while True:
+    #         messages = recv_message()
+    #         executor.submit(process_dns_request,record_collection,config,messages)
+    while True:
+        messages = recv_message()
+        process_dns_request(record_collection,config,messages)
 
 
 def connect_to_mongodb(url):
