@@ -24,17 +24,17 @@ def get_default_ipv4_gw():
     default_gw = re.findall('\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\s+',default_gw_outputs)
     if len(default_gw) != 0:
         default_gw = default_gw[0]
-        print("Get System Default IPV4 GW: {}".format(default_gw))
+        logging.info("Get System Default IPV4 GW: {}".format(default_gw))
         return default_gw
-    print("Unable Get System Default IPV4 GW")
+    logging.error("Unable Get System Default IPV4 GW")
     return None
 
 def get_default_ipv6_gw():
     default_gw_outputs = ''.join(os.popen("ip -6 route | grep default | egrep -o '([a-f0-9:]+:+)+[a-f0-9]+'").readlines()).strip()
     if len(default_gw_outputs) != 0:
-        print("Get System Default IPV6 GW: {}".format(default_gw_outputs))
+        logging.info("Get System Default IPV6 GW: {}".format(default_gw_outputs))
         return default_gw_outputs
-    print("Unable Get System Default IPV6 GW")
+    logging.error("Unable Get System Default IPV6 GW")
     return None
 
 
@@ -135,7 +135,7 @@ def add_static_route(dns_request, domain_config):
                         vtysh_ipv4_add_one_static_route(ipv4_net_record['addr'],ipv4_gw)
                         logging.info("[vtysh]: ipv4 net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv4_net_record['addr'],ipv4_gw,dns_request['request-domain'],domain_config['domain'],ipv4_net_record['domain']))
     except Exception as e:
-        print("Error happened in add ipv4 static route, error: " + str(e))
+        logging.error("Error happened in add ipv4 static route, error: " + str(e))
 
     try:
         if 'ipv6_gw' in domain_config.keys():
@@ -150,7 +150,7 @@ def add_static_route(dns_request, domain_config):
                             vtysh_ipv6_add_one_static_route(ipv6_net_record['addr'],ipv6_gw)
                             logging.info("[vtysh]: ipv6 net add {} to gw:{}, request: {}, match: {}, alias domain: {}".format(ipv6_net_record['addr'],ipv6_gw,dns_request['request-domain'],domain_config['domain'],ipv6_net_record['domain']))
     except Exception as e:
-        print("Error happened in add ipv6 static route, error: " + str(e))
+        logging.error("Error happened in add ipv6 static route, error: " + str(e))
 
 
 def add_dns_record_to_db(record_collection,dns_request, domain_config):
