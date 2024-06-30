@@ -30,7 +30,7 @@ def get_default_ipv4_gw():
     return None
 
 def get_default_ipv6_gw():
-    default_gw_outputs = ''.join(os.popen("ip -6 route | grep default | egrep -o '([a-f0-9:]+:+)+[a-f0-9]+'").readlines()).lstrip()
+    default_gw_outputs = ''.join(os.popen("ip -6 route | grep default | egrep -o '([a-f0-9:]+:+)+[a-f0-9]+'").readlines()).strip()
     if len(default_gw_outputs) != 0:
         print("Get System Default IPV6 GW: {}".format(default_gw_outputs))
         return default_gw_outputs
