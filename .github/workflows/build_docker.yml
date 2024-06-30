@@ -6,6 +6,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: Get current date
+        id: date
+        run: echo "::set-output name=date::$(date +'%Y-%m-%d')"
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -47,5 +50,7 @@ jobs:
           push: true
           tags: |
             runshine0819/smartdns-server:latest
+            runshine0819/smartdns-server:nightly-${{ steps.date.outputs.date }}
             ghcr.io/runshine/smartdns-server:latest
+            ghcr.io/runshine/smartdns-server:nightly-${{ steps.date.outputs.date }}
           file: smartdns-server.dockerfile
