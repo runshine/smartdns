@@ -81,7 +81,8 @@ def ipv6_addr_to_net(ipv6_addr):
 
 
 def vtysh_list_static_route():
-    vtysh_route_output = ''.join(os.popen('echo "show ip route static" | vtysh | grep -v Codes|grep S|grep -v OSPF|grep -v SHARP|grep -v inactive').readlines()).strip()
+    global ip_route_table_id
+    vtysh_route_output = ''.join(os.popen('echo "show ip route table {}" | vtysh | grep -v Codes|grep S|grep -v OSPF|grep -v SHARP|grep -v inactive'.format(ip_route_table_id)).readlines()).strip()
     result = []
     for line in vtysh_route_output.split('\n'):
         if line.find('via') != -1:
@@ -99,7 +100,7 @@ def vtysh_ipv4_add_one_static_route(static_net, ipv4_gw):
 
 def vtysh_ipv6_add_one_static_route(static_net, ipv6_gw):
     global ip_route_table_id
-    vtysh_static_route_cmd = 'ipv6 route {} {} table {}'.format(static_net, ipv6_gw,ip_route_table_id)
+    vtysh_static_route_cmd = 'ipv6 route {} {}'.format(static_net, ipv6_gw)
     subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
 
 
