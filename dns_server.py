@@ -44,7 +44,7 @@ def start_vtysh_console():
         try:
             console=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             console.stdin.write("config terminal\n".encode('utf-8'))
-            while console.stdout.readline().find("config") == -1:
+            while console.stdout.readline().decode('utf-8').find("config") == -1:
                 continue
             return console #initial state
         except Exception as e:
