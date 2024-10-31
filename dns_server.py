@@ -39,6 +39,35 @@ def get_default_ipv6_gw():
     return None
 
 
+def start_vtysh_console():
+    while True:
+        try:
+            console=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            console.stdin.write("config terminal\n".encode('utf-8'))
+            while console.stdout.readline().find("config") == -1:
+                continue
+            return console #initial state
+        except Exception as e:
+            logging.error("start_vtysh_console error happened, try it again: " + str(e))
+            time.sleep(1)
+
+
+vtysh_console=start_vtysh_console()
+
+
+def write_vtysh_line(line):
+    global vtysh_console
+    while True:
+        try:
+            vtysh_console.stdin.write(line.encode('utf-8'))
+            vtysh_console.stdout.readline()
+            break
+        except Exception as e:
+            logging.error("write to vtysh console error, try it again: error:" + str(e))
+        vtysh_console = start_vtysh_console()
+        time.sleep(1)
+
+
 system_default_gw = None
 system_default_ipv6_gw = None
 
@@ -94,15 +123,17 @@ def vtysh_list_static_route():
 
 def vtysh_ipv4_add_one_static_route(static_net, ipv4_gw):
     global ip_route_table_id
-    vtysh_static_route_cmd = 'ip route {} {} table {}'.format(static_net, ipv4_gw,ip_route_table_id)
-    subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
+    vtysh_static_route_cmd = 'ip route {} {} table {}\n'.format(static_net, ipv4_gw,ip_route_table_id)
+    #subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
+    write_vtysh_line(vtysh_static_route_cmd)
+
 
 
 def vtysh_ipv6_add_one_static_route(static_net, ipv6_gw):
     global ip_route_table_id
-    vtysh_static_route_cmd = 'ipv6 route {} {}'.format(static_net, ipv6_gw)
-    subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
-
+    vtysh_static_route_cmd = 'ipv6 route {} {}\n'.format(static_net, ipv6_gw)
+    #subprocess.call(['vtysh','-c','config terminal','-c',vtysh_static_route_cmd],timeout=20)
+    write_vtysh_line(vtysh_static_route_cmd)
 
 def vtysh_ipv4_add_multi_static_route(static_net_list, ipv4_gw):
     global ip_route_table_id
