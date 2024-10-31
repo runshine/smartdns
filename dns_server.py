@@ -42,10 +42,16 @@ def get_default_ipv6_gw():
 def start_vtysh_console():
     while True:
         try:
+            logging.info("try to connect to vtysh")
             console=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
             console.stdin.write("config terminal\n".encode('utf-8'))
-            while console.stdout.readline().decode('utf-8').find("config") == -1:
+            line = console.stdout.readline().decode('utf-8')
+            logging.info(line)
+            while line.find("config") == -1:
+                line = console.stdout.readline().decode('utf-8')
+                logging.info(line)
                 continue
+            logging.info("success to connect to vtysh")
             return console #initial state
         except Exception as e:
             logging.error("start_vtysh_console error happened, try it again: " + str(e))
