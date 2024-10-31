@@ -19,7 +19,6 @@ from readerwriterlock import rwlock
 
 config_rw_lock = rwlock.RWLockFair()
 
-
 def get_default_ipv4_gw():
     default_gw_outputs = ''.join(os.popen('ip route |grep default').readlines())
     default_gw = re.findall('\s+(\\d+\\.\\d+\\.\\d+\\.\\d+)\s+',default_gw_outputs)
@@ -39,17 +38,43 @@ def get_default_ipv6_gw():
     return None
 
 
+def vtysh_console_readline(console,timeout=0,log=True):
+    line = ""
+    while True:
+        text = console.stdout.read(1).decode('utf-8')
+        line = line + text
+        if text == '#' or text == '\n':
+            break
+    if log:
+        logging.info(line.strip())
+    return line
+
+
+def vtysh_console_read_until(console,char):
+    line = ""
+    while True:
+        text = console.stdout.read(1).decode('utf-8')
+        line = line + text
+        if text == char :
+            break
+    return line
+
+
 def start_vtysh_console():
     while True:
         try:
             logging.info("try to connect to vtysh")
-            console=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            console=subprocess.Popen(['vtysh'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,shell=False)
+            line = vtysh_console_readline(console)
+            while line.find("#") == -1:
+                line = vtysh_console_readline(console)
+                continue
+            logging.info("write 'config terminal' to vtysh console")
             console.stdin.write("config terminal\n".encode('utf-8'))
-            line = console.stdout.readline().decode('utf-8')
-            logging.info(line)
+            console.stdin.flush()
+            line = vtysh_console_readline(console)
             while line.find("config") == -1:
-                line = console.stdout.readline().decode('utf-8')
-                logging.info(line)
+                line = vtysh_console_readline(console)
                 continue
             logging.info("success to connect to vtysh")
             return console #initial state
@@ -58,15 +83,13 @@ def start_vtysh_console():
             time.sleep(1)
 
 
-vtysh_console=start_vtysh_console()
-
-
 def write_vtysh_line(line):
     global vtysh_console
     while True:
         try:
             vtysh_console.stdin.write(line.encode('utf-8'))
-            vtysh_console.stdout.readline()
+            vtysh_console.stdin.flush()
+            vtysh_console_read_until(vtysh_console,'#')
             break
         except Exception as e:
             logging.error("write to vtysh console error, try it again: error:" + str(e))
@@ -371,6 +394,7 @@ def process_extra_ip(args):
 
 
 if __name__ == "__main__":
+    global vtysh_console
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log',      metavar='l', type=str, required=False, help='log file')
     parser.add_argument('--mongodb',  metavar='m', type=str, required=True,  help='mongodb url, example: mongodb://localhost:27017/')
@@ -403,6 +427,7 @@ if __name__ == "__main__":
         process_extra_ip(args)
         exit(0)
     process_extra_ip(args)
+    vtysh_console=start_vtysh_console()
     if args.socket is not None:
         start_socket_server(args, None, None)
     else:
