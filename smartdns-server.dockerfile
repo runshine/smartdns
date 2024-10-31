@@ -1,4 +1,4 @@
-FROM quay.mirrors.ustc.edu.cn/frrouting/frr:10.0.0
+FROM quay.io/frrouting/frr:10.1.1
 COPY dns_server.py /
 RUN sed -i 's/https/http/' /etc/apk/repositories
 RUN apk --no-cache --update upgrade && apk --no-cache add ca-certificates
