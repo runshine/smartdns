@@ -6,4 +6,9 @@ SMART_DNS_OPTS=
 EXTRA_SERVER_OPTS=--extra=/opt/tel.ip
 NODE_ID=--node_id=10.11.200.100
 DNS=--dns=1.1.1.1
-MONGODB=--mongodb=aaa
+MONGODB=--mongodb=mongodb://127.0.0.1:27017/
+API_HOST=--api-host=127.0.0.1
+API_PORT=--api-port=8080
+API_TOKEN=--api-token=changeme
+RECORD_TTL_DAYS=--record-ttl-days=7
+CONFIG_REFRESH_INTERVAL=--config-refresh-interval=5
