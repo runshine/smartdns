@@ -8,4 +8,4 @@ RUN pip3 install pymongo readerwriterlock fastapi 'uvicorn[standard]' --break-sy
 VOLUME "/etc/dnsmasq.d/"
 VOLUME "/opt"
 VOLUME "/etc/frr"
-CMD ["bash","-c","/dns_server.py --socket=udp://127.0.0.1:33441 --log=/tmp/dns_server.log --extra=/opt/ --node_id=10.11.200.100 --dns=1.1.1.1 --mongodb=mongodb://127.0.0.1:27017/ --api-host=127.0.0.1 --api-port=8080 --api-token=changeme & /usr/lib/frr/docker-start"]
+CMD ["bash","-c","/dns_server.py --socket=udp://127.0.0.1:33441 --log=/tmp/dns_server.log --extra=/opt/ --node_id=10.11.200.100 --dns=1.1.1.1 --mongodb=mongodb://127.0.0.1:27017/ --api-token=changeme & /usr/lib/frr/docker-start"]
