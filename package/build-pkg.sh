@@ -45,7 +45,7 @@ build_smartdns()
 {
 	if [ "$PLATFORM" != "luci" ]; then
 		make -C $CODE_DIR clean $MAKE_ARGS
-		make -C $CODE_DIR all -j8 VER=$VER $MAKE_ARGS
+		make -C $CODE_DIR all -j8 VER=$VER STATIC=$STATIC $MAKE_ARGS
 		if [ $? -ne 0 ]; then
 			echo "make smartdns failed"
 			exit 1
