@@ -21,13 +21,6 @@ class DummyRWLock:
         return DummyLockHandle()
 
 
-class ReaderWriterLockModule(types.ModuleType):
-    class rwlock:  # noqa: N801
-        @staticmethod
-        def RWLockFair():
-            return DummyRWLock()
-
-
 class DummyCollection:
     def __init__(self):
         self.inserted = []
@@ -45,31 +38,24 @@ class DummyCollection:
 class DnsServerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        sys.modules.setdefault('pymongo', types.ModuleType('pymongo'))
-        sys.modules['pymongo'].ASCENDING = 1
-        sys.modules['pymongo'].DESCENDING = -1
-        sys.modules['pymongo'].ReturnDocument = SimpleNamespace(BEFORE='before', AFTER='after')
-        sys.modules['pymongo'].MongoClient = object
+        class ReaderWriterLockModule(types.ModuleType):
+            class rwlock:  # noqa: N801
+                @staticmethod
+                def RWLockFair():
+                    return DummyRWLock()
 
-        errors_module = types.ModuleType('pymongo.errors')
-        errors_module.DuplicateKeyError = type('DuplicateKeyError', (Exception,), {})
-        errors_module.PyMongoError = type('PyMongoError', (Exception,), {})
-        sys.modules['pymongo.errors'] = errors_module
-
-        bson_module = types.ModuleType('bson')
-        bson_module.ObjectId = str
-        sys.modules['bson'] = bson_module
         sys.modules['readerwriterlock'] = ReaderWriterLockModule('readerwriterlock')
-
         spec = importlib.util.spec_from_file_location('dns_server', 'dns_server.py')
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         cls.module = module
+        cls.module.config_rw_lock = DummyRWLock()
         cls.module.state = SimpleNamespace(
             args=SimpleNamespace(node_id='node-1'),
-            mongo_available=True,
+            db_available=True,
             record_collection=None,
             stats_collection=None,
+            set_error=lambda message: None,
         )
 
     def test_get_domain_config_exact_and_suffix(self):
@@ -114,8 +100,8 @@ class DnsServerTests(unittest.TestCase):
         self.assertTrue(document['status']['route_applied'])
         self.assertEqual(len(stats_collection.updated), 1)
 
-    def test_persist_dns_event_is_noop_when_mongodb_unavailable(self):
-        self.module.state.mongo_available = False
+    def test_persist_dns_event_is_noop_when_sqlite_unavailable(self):
+        self.module.state.db_available = False
         self.module.state.record_collection = DummyCollection()
         self.module.state.stats_collection = DummyCollection()
         result = self.module.persist_dns_event(
@@ -125,7 +111,7 @@ class DnsServerTests(unittest.TestCase):
         )
         self.assertIsNone(result)
         self.assertEqual(self.module.state.record_collection.inserted, [])
-        self.module.state.mongo_available = True
+        self.module.state.db_available = True
 
 
 if __name__ == '__main__':

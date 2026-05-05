@@ -7,28 +7,26 @@ import os
 import re
 import signal
 import socket
+import sqlite3
 import subprocess
 import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-import pymongo
-from bson import ObjectId
-from pymongo import ASCENDING, DESCENDING, ReturnDocument
-from pymongo.errors import DuplicateKeyError, PyMongoError
 from readerwriterlock import rwlock
 
 try:
     import uvicorn
-    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+    from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
     from fastapi.responses import JSONResponse
     from pydantic import BaseModel, ConfigDict, Field, field_validator
 except ImportError:  # pragma: no cover - handled at runtime
     uvicorn = None
     FastAPI = None
+
     def Depends(value=None):
         return value
 
@@ -42,8 +40,6 @@ except ImportError:  # pragma: no cover - handled at runtime
 
     HTTPException = Exception
     Request = None
-    Response = None
-    status = None
 
     class BaseModel:
         def __init__(self, **kwargs):
@@ -74,11 +70,49 @@ except ImportError:  # pragma: no cover - handled at runtime
             self.content = content
 
 
+ASCENDING = 1
+DESCENDING = -1
+
 config_rw_lock = rwlock.RWLockFair()
 system_default_gw = None
 system_default_ipv6_gw = None
 vtysh_console = None
 state = None
+
+
+class DuplicateKeyError(Exception):
+    pass
+
+
+class ReturnDocument:
+    BEFORE = 'before'
+    AFTER = 'after'
+
+
+class SimpleResult:
+    def __init__(self, inserted_id=None, deleted_count=0):
+        self.inserted_id = inserted_id
+        self.deleted_count = deleted_count
+
+
+class SQLiteAdmin:
+    def __init__(self, db):
+        self.db = db
+
+    def command(self, command_name):
+        if command_name != 'ping':
+            raise ValueError(f'unsupported command: {command_name}')
+        self.db.execute('SELECT 1')
+        return {'ok': 1}
+
+
+class SQLiteClient:
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+        self.admin = SQLiteAdmin(conn)
+
+    def close(self):
+        self.conn.close()
 
 
 def utcnow() -> datetime:
@@ -94,55 +128,79 @@ def isoformat(dt: Optional[datetime]) -> Optional[str]:
 
 
 def parse_datetime(value: Optional[str]) -> Optional[datetime]:
-    if value is None or value == "":
+    if value is None or value == '':
         return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
     try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
+        if value.endswith('Z'):
+            value = value[:-1] + '+00:00'
         dt = datetime.fromisoformat(value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
     except ValueError as exc:
-        raise ValueError(f"invalid datetime: {value}") from exc
+        raise ValueError(f'invalid datetime: {value}') from exc
 
 
 def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return hashlib.sha256(token.encode('utf-8')).hexdigest()
 
 
 def normalize_domain(domain: str) -> str:
     domain = domain.strip().lower().rstrip('.')
     if not domain:
-        raise ValueError("domain cannot be empty")
+        raise ValueError('domain cannot be empty')
     return domain
 
 
 def validate_ipv4(value: Optional[str]) -> Optional[str]:
-    if value is None or value == "":
+    if value is None or value == '':
         return None
     parts = value.split('.')
     if len(parts) != 4:
-        raise ValueError(f"invalid IPv4 gateway: {value}")
+        raise ValueError(f'invalid IPv4 gateway: {value}')
     for part in parts:
         if not part.isdigit() or not 0 <= int(part) <= 255:
-            raise ValueError(f"invalid IPv4 gateway: {value}")
+            raise ValueError(f'invalid IPv4 gateway: {value}')
     return value
 
 
 def validate_ipv6(value: Optional[str]) -> Optional[str]:
-    if value is None or value == "":
+    if value is None or value == '':
         return None
     try:
         socket.inet_pton(socket.AF_INET6, value)
     except OSError as exc:
-        raise ValueError(f"invalid IPv6 gateway: {value}") from exc
+        raise ValueError(f'invalid IPv6 gateway: {value}') from exc
     return value
 
 
 def ensure_fastapi_installed():
     if FastAPI is None or uvicorn is None:
-        raise RuntimeError("fastapi/uvicorn is required for REST API support")
+        raise RuntimeError('fastapi/uvicorn is required for REST API support')
+
+
+def serialize_storage_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return {'__datetime__': isoformat(value)}
+    if isinstance(value, list):
+        return [serialize_storage_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: serialize_storage_value(item) for key, item in value.items()}
+    return value
+
+
+def deserialize_storage_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [deserialize_storage_value(item) for item in value]
+    if isinstance(value, dict):
+        if set(value.keys()) == {'__datetime__'}:
+            return parse_datetime(value['__datetime__'])
+        return {key: deserialize_storage_value(item) for key, item in value.items()}
+    return value
 
 
 def get_default_ipv4_gw():
@@ -150,9 +208,9 @@ def get_default_ipv4_gw():
     default_gw = re.findall(r'\s+(\d+\.\d+\.\d+\.\d+)\s+', default_gw_outputs)
     if len(default_gw) != 0:
         default_gw = default_gw[0]
-        logging.info("Get System Default IPV4 GW: %s", default_gw)
+        logging.info('Get System Default IPV4 GW: %s', default_gw)
         return default_gw
-    logging.error("Unable Get System Default IPV4 GW")
+    logging.error('Unable Get System Default IPV4 GW')
     return None
 
 
@@ -161,15 +219,15 @@ def get_default_ipv6_gw():
         os.popen(r"ip -6 route | grep default | egrep -o '([a-f0-9:]+:+)+[a-f0-9]+' ").readlines()
     ).strip()
     if len(default_gw_outputs) != 0:
-        logging.info("Get System Default IPV6 GW: %s", default_gw_outputs)
+        logging.info('Get System Default IPV6 GW: %s', default_gw_outputs)
         return default_gw_outputs
-    logging.error("Unable Get System Default IPV6 GW")
+    logging.error('Unable Get System Default IPV6 GW')
     return None
 
 
 def vtysh_console_readline(console, timeout=0, log=True):
     del timeout
-    line = ""
+    line = ''
     while True:
         text = console.stdout.read(1).decode('utf-8')
         line = line + text
@@ -181,7 +239,7 @@ def vtysh_console_readline(console, timeout=0, log=True):
 
 
 def vtysh_console_read_until(console, char):
-    line = ""
+    line = ''
     while True:
         text = console.stdout.read(1).decode('utf-8')
         line = line + text
@@ -193,23 +251,23 @@ def vtysh_console_read_until(console, char):
 def start_vtysh_console():
     while True:
         try:
-            logging.info("try to connect to vtysh")
+            logging.info('try to connect to vtysh')
             console = subprocess.Popen(
                 ['vtysh'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, shell=False
             )
             line = vtysh_console_readline(console)
-            while line.find("#") == -1:
+            while line.find('#') == -1:
                 line = vtysh_console_readline(console)
             logging.info("write 'config terminal' to vtysh console")
-            console.stdin.write("config terminal\n".encode('utf-8'))
+            console.stdin.write('config terminal\n'.encode('utf-8'))
             console.stdin.flush()
             line = vtysh_console_readline(console)
-            while line.find("config") == -1:
+            while line.find('config') == -1:
                 line = vtysh_console_readline(console)
-            logging.info("success to connect to vtysh")
+            logging.info('success to connect to vtysh')
             return console
         except Exception as exc:
-            logging.error("start_vtysh_console error happened, try it again: %s", exc)
+            logging.error('start_vtysh_console error happened, try it again: %s', exc)
             time.sleep(1)
 
 
@@ -222,21 +280,21 @@ def write_vtysh_line(line):
             vtysh_console_read_until(vtysh_console, '#')
             return
         except Exception as exc:
-            logging.error("write to vtysh console error, try it again: error:%s", exc)
+            logging.error('write to vtysh console error, try it again: error:%s', exc)
         vtysh_console = start_vtysh_console()
         time.sleep(1)
 
 
-if "IP_RT_TABLE_ID" in os.environ.keys():
-    ip_route_table_id = str(os.environ["IP_RT_TABLE_ID"])
+if 'IP_RT_TABLE_ID' in os.environ.keys():
+    ip_route_table_id = str(os.environ['IP_RT_TABLE_ID'])
 else:
-    ip_route_table_id = "254"
+    ip_route_table_id = '254'
 
 
 class AppState:
     def __init__(self, args):
         self.args = args
-        self.mongo_client = None
+        self.db_client = None
         self.record_collection = None
         self.config_collection = None
         self.stats_collection = None
@@ -247,11 +305,11 @@ class AppState:
         self.last_error: Optional[str] = None
         self.socket_thread: Optional[threading.Thread] = None
         self.api_thread: Optional[threading.Thread] = None
-        self.mongo_lock = threading.Lock()
+        self.db_lock = threading.Lock()
         self.config_refresh_interval = args.config_refresh_interval
         self.api_token_hash = hash_token(args.api_token) if args.api_token else None
-        self.mongo_available = False
-        self.mongo_disabled_reason: Optional[str] = None
+        self.db_available = False
+        self.db_disabled_reason: Optional[str] = None
 
     def touch_request(self):
         self.last_request_at = utcnow()
@@ -259,9 +317,9 @@ class AppState:
     def set_error(self, message: str):
         self.last_error = message
 
-    def set_mongo_state(self, available: bool, reason: Optional[str] = None):
-        self.mongo_available = available
-        self.mongo_disabled_reason = reason
+    def set_db_state(self, available: bool, reason: Optional[str] = None):
+        self.db_available = available
+        self.db_disabled_reason = reason
 
 
 def get_domain_config(domain, config_array):
@@ -290,11 +348,11 @@ def get_domain_config(domain, config_array):
 
 
 def ipv4_addr_to_net(ipv4_addr):
-    return ipv4_addr[:ipv4_addr.rfind('.')] + ".0/24"
+    return ipv4_addr[:ipv4_addr.rfind('.')] + '.0/24'
 
 
 def ipv6_addr_to_net(ipv6_addr):
-    return ipv6_addr + "/64"
+    return ipv6_addr + '/64'
 
 
 def vtysh_list_static_route():
@@ -327,20 +385,20 @@ def vtysh_ipv6_add_one_static_route(static_net, ipv6_gw):
 def vtysh_ipv4_add_multi_static_route(static_net_list, ipv4_gw):
     global ip_route_table_id
     process = subprocess.Popen(['vtysh'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    send_data = "config terminal\n"
+    send_data = 'config terminal\n'
     for static_net in static_net_list:
-        send_data = send_data + f"ip route {static_net} {ipv4_gw} table {ip_route_table_id}\n"
-    send_data = send_data + "quit\nquit\n"
+        send_data = send_data + f'ip route {static_net} {ipv4_gw} table {ip_route_table_id}\n'
+    send_data = send_data + 'quit\nquit\n'
     process.communicate(send_data.encode('utf-8'), timeout=30)
 
 
 def vtysh_ipv4_remove_multi_static_rotue(static_net_list):
     global ip_route_table_id
     process = subprocess.Popen(['vtysh'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    send_data = "config ter\n"
+    send_data = 'config ter\n'
     for static_net in static_net_list:
-        send_data = send_data + f"no ip route {static_net[0]} {static_net[1]} table {ip_route_table_id}\n"
-    send_data = send_data + "quit\nquit\n"
+        send_data = send_data + f'no ip route {static_net[0]} {static_net[1]} table {ip_route_table_id}\n'
+    send_data = send_data + 'quit\nquit\n'
     process.communicate(send_data.encode('utf-8'), timeout=30)
 
 
@@ -350,10 +408,10 @@ def sanitize_answer_records(records: Optional[List[Dict[str, Any]]]) -> List[Dic
         if not isinstance(record, dict):
             continue
         item = {}
-        for key in ("addr", "domain", "ttl"):
+        for key in ('addr', 'domain', 'ttl'):
             if key in record:
                 item[key] = record[key]
-        if "addr" in item:
+        if 'addr' in item:
             sanitized.append(item)
     return sanitized
 
@@ -369,35 +427,27 @@ def add_static_route(dns_request, domain_config):
                         target = ipv4_addr_to_net(ipv4_record['addr'])
                         try:
                             vtysh_ipv4_add_one_static_route(target, ipv4_gw)
-                            route_actions.append({
-                                'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'applied'
-                            })
+                            route_actions.append({'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'applied'})
                             logging.info(
-                                "[vtysh]: ip add %s to gw:%s, request: %s, match: %s, alias domain: %s",
+                                '[vtysh]: ip add %s to gw:%s, request: %s, match: %s, alias domain: %s',
                                 target, ipv4_gw, dns_request['request-domain'], domain_config['domain'], ipv4_record.get('domain')
                             )
                         except Exception as exc:
-                            route_actions.append({
-                                'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'error', 'error': str(exc)
-                            })
+                            route_actions.append({'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'error', 'error': str(exc)})
                 if 'ipv4_net' in dns_request.keys():
                     for ipv4_net_record in dns_request['ipv4_net']:
                         target = ipv4_net_record['addr']
                         try:
                             vtysh_ipv4_add_one_static_route(target, ipv4_gw)
-                            route_actions.append({
-                                'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'applied'
-                            })
+                            route_actions.append({'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'applied'})
                             logging.info(
-                                "[vtysh]: ipv4 net add %s to gw:%s, request: %s, match: %s, alias domain: %s",
+                                '[vtysh]: ipv4 net add %s to gw:%s, request: %s, match: %s, alias domain: %s',
                                 target, ipv4_gw, dns_request['request-domain'], domain_config['domain'], ipv4_net_record.get('domain')
                             )
                         except Exception as exc:
-                            route_actions.append({
-                                'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'error', 'error': str(exc)
-                            })
+                            route_actions.append({'family': 'ipv4', 'target': target, 'gateway': ipv4_gw, 'status': 'error', 'error': str(exc)})
     except Exception as exc:
-        logging.error("Error happened in add ipv4 static route, error: %s", exc)
+        logging.error('Error happened in add ipv4 static route, error: %s', exc)
         route_actions.append({'family': 'ipv4', 'status': 'error', 'error': str(exc)})
 
     try:
@@ -409,35 +459,27 @@ def add_static_route(dns_request, domain_config):
                         target = ipv6_addr_to_net(ipv6_record['addr'])
                         try:
                             vtysh_ipv6_add_one_static_route(target, ipv6_gw)
-                            route_actions.append({
-                                'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'applied'
-                            })
+                            route_actions.append({'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'applied'})
                             logging.info(
-                                "[vtysh]: ipv6 add %s to gw:%s, request: %s, match: %s, alias domain: %s",
+                                '[vtysh]: ipv6 add %s to gw:%s, request: %s, match: %s, alias domain: %s',
                                 target, ipv6_gw, dns_request['request-domain'], domain_config['domain'], ipv6_record.get('domain')
                             )
                         except Exception as exc:
-                            route_actions.append({
-                                'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'error', 'error': str(exc)
-                            })
+                            route_actions.append({'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'error', 'error': str(exc)})
                 if 'ipv6_net' in dns_request.keys():
                     for ipv6_net_record in dns_request['ipv6_net']:
                         target = ipv6_net_record['addr']
                         try:
                             vtysh_ipv6_add_one_static_route(target, ipv6_gw)
-                            route_actions.append({
-                                'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'applied'
-                            })
+                            route_actions.append({'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'applied'})
                             logging.info(
-                                "[vtysh]: ipv6 net add %s to gw:%s, request: %s, match: %s, alias domain: %s",
+                                '[vtysh]: ipv6 net add %s to gw:%s, request: %s, match: %s, alias domain: %s',
                                 target, ipv6_gw, dns_request['request-domain'], domain_config['domain'], ipv6_net_record.get('domain')
                             )
                         except Exception as exc:
-                            route_actions.append({
-                                'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'error', 'error': str(exc)
-                            })
+                            route_actions.append({'family': 'ipv6', 'target': target, 'gateway': ipv6_gw, 'status': 'error', 'error': str(exc)})
     except Exception as exc:
-        logging.error("Error happened in add ipv6 static route, error: %s", exc)
+        logging.error('Error happened in add ipv6 static route, error: %s', exc)
         route_actions.append({'family': 'ipv6', 'status': 'error', 'error': str(exc)})
     return route_actions
 
@@ -475,6 +517,277 @@ def normalize_dns_request(raw_request: Dict[str, Any], domain_config: Optional[D
     return document
 
 
+def get_nested(document: Dict[str, Any], dotted_key: str):
+    value = document
+    for part in dotted_key.split('.'):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def match_value(actual, condition):
+    if isinstance(condition, dict):
+        for op, expected in condition.items():
+            if op == '$gte' and not (actual is not None and actual >= expected):
+                return False
+            if op == '$lte' and not (actual is not None and actual <= expected):
+                return False
+            if op == '$lt' and not (actual is not None and actual < expected):
+                return False
+            if op == '$ne' and actual == expected:
+                return False
+        return True
+    return actual == condition
+
+
+def filter_documents(documents: Iterable[Dict[str, Any]], query: Dict[str, Any]) -> List[Dict[str, Any]]:
+    results = []
+    for document in documents:
+        matched = True
+        for key, condition in query.items():
+            actual = get_nested(document, key)
+            if not match_value(actual, condition):
+                matched = False
+                break
+        if matched:
+            results.append(document)
+    return results
+
+
+class QueryResult:
+    def __init__(self, documents: List[Dict[str, Any]]):
+        self.documents = documents
+
+    def sort(self, key: str, direction: int):
+        reverse = direction == DESCENDING
+        self.documents.sort(key=lambda item: get_nested(item, key) if get_nested(item, key) is not None else '', reverse=reverse)
+        return self
+
+    def limit(self, count: int):
+        self.documents = self.documents[:count]
+        return self
+
+    def __iter__(self):
+        return iter(self.documents)
+
+    def __len__(self):
+        return len(self.documents)
+
+
+class SQLiteCollectionBase:
+    def __init__(self, conn: sqlite3.Connection, lock: threading.Lock):
+        self.conn = conn
+        self.lock = lock
+
+    def create_index(self, *args, **kwargs):
+        del args, kwargs
+        return None
+
+
+class SQLiteConfigCollection(SQLiteCollectionBase):
+    def _load_all(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute('SELECT data_json FROM configs').fetchall()
+        return [deserialize_storage_value(json.loads(row['data_json'])) for row in rows]
+
+    def find(self, query: Dict[str, Any]):
+        return QueryResult(filter_documents(self._load_all(), query))
+
+    def find_one(self, query: Dict[str, Any]):
+        docs = filter_documents(self._load_all(), query)
+        return docs[0] if docs else None
+
+    def insert_one(self, document: Dict[str, Any]):
+        payload = json.dumps(serialize_storage_value(document), ensure_ascii=False)
+        try:
+            with self.lock:
+                self.conn.execute(
+                    'INSERT INTO configs(domain, enabled, updated_at, data_json) VALUES (?, ?, ?, ?)',
+                    (document['domain'], 1 if document.get('enabled', True) else 0, isoformat(document.get('updated_at')), payload),
+                )
+                self.conn.commit()
+        except sqlite3.IntegrityError as exc:
+            raise DuplicateKeyError(str(exc)) from exc
+        return SimpleResult(inserted_id=document['domain'])
+
+    def find_one_and_update(self, query: Dict[str, Any], update: Dict[str, Any], upsert=False, return_document=ReturnDocument.BEFORE):
+        existing = self.find_one(query)
+        if existing is None and not upsert:
+            return None
+        if existing is None:
+            document = dict(query)
+            for key, value in update.get('$setOnInsert', {}).items():
+                document[key] = value
+        else:
+            document = dict(existing)
+        for key, value in update.get('$set', {}).items():
+            document[key] = value
+        if existing is None:
+            document.setdefault('enabled', True)
+        payload = json.dumps(serialize_storage_value(document), ensure_ascii=False)
+        with self.lock:
+            self.conn.execute(
+                'INSERT INTO configs(domain, enabled, updated_at, data_json) VALUES (?, ?, ?, ?) '
+                'ON CONFLICT(domain) DO UPDATE SET enabled=excluded.enabled, updated_at=excluded.updated_at, data_json=excluded.data_json',
+                (document['domain'], 1 if document.get('enabled', True) else 0, isoformat(document.get('updated_at')), payload),
+            )
+            self.conn.commit()
+        if return_document == ReturnDocument.AFTER:
+            return document
+        return existing
+
+    def delete_one(self, query: Dict[str, Any]):
+        domain = query.get('domain')
+        with self.lock:
+            cursor = self.conn.execute('DELETE FROM configs WHERE domain = ?', (domain,))
+            self.conn.commit()
+        return SimpleResult(deleted_count=cursor.rowcount)
+
+
+class SQLiteRecordCollection(SQLiteCollectionBase):
+    def _load_all(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute('SELECT id, data_json FROM records').fetchall()
+        docs = []
+        for row in rows:
+            document = deserialize_storage_value(json.loads(row['data_json']))
+            document['_id'] = row['id']
+            docs.append(document)
+        return docs
+
+    def insert_one(self, document: Dict[str, Any]):
+        payload = json.dumps(serialize_storage_value(document), ensure_ascii=False)
+        with self.lock:
+            cursor = self.conn.execute(
+                'INSERT INTO records(created_at, request_domain, request_ip, matched_domain, route_applied, data_json) VALUES (?, ?, ?, ?, ?, ?)',
+                (
+                    isoformat(document['created_at']),
+                    document.get('request_domain'),
+                    document.get('request_ip'),
+                    document.get('matched_domain'),
+                    1 if document.get('status', {}).get('route_applied') else 0,
+                    payload,
+                ),
+            )
+            self.conn.commit()
+            inserted_id = cursor.lastrowid
+        return SimpleResult(inserted_id=inserted_id)
+
+    def find(self, query: Dict[str, Any]):
+        return QueryResult(filter_documents(self._load_all(), query))
+
+    def find_one(self, query: Dict[str, Any]):
+        docs = filter_documents(self._load_all(), query)
+        return docs[0] if docs else None
+
+
+class SQLiteStatsCollection(SQLiteCollectionBase):
+    def _load_all(self) -> List[Dict[str, Any]]:
+        with self.lock:
+            rows = self.conn.execute('SELECT data_json FROM record_stats').fetchall()
+        return [deserialize_storage_value(json.loads(row['data_json'])) for row in rows]
+
+    def update_one(self, query: Dict[str, Any], update: Dict[str, Any], upsert=False):
+        del upsert
+        existing = None
+        for item in self._load_all():
+            if item['domain'] == query['domain'] and item['minute_bucket'] == query['minute_bucket'] and item['node_id'] == query['node_id']:
+                existing = item
+                break
+        if existing is None:
+            document = {
+                'domain': query['domain'],
+                'minute_bucket': query['minute_bucket'],
+                'node_id': query['node_id'],
+                'query_count': 0,
+                'route_apply_count': 0,
+                'ipv4_answer_count': 0,
+                'ipv6_answer_count': 0,
+            }
+            for key, value in update.get('$setOnInsert', {}).items():
+                document[key] = value
+        else:
+            document = dict(existing)
+        for key, value in update.get('$inc', {}).items():
+            document[key] = document.get(key, 0) + value
+        for key, value in update.get('$set', {}).items():
+            document[key] = value
+        payload = json.dumps(serialize_storage_value(document), ensure_ascii=False)
+        with self.lock:
+            self.conn.execute(
+                'INSERT INTO record_stats(domain, minute_bucket, node_id, last_seen_at, data_json) VALUES (?, ?, ?, ?, ?) '
+                'ON CONFLICT(domain, minute_bucket, node_id) DO UPDATE SET last_seen_at=excluded.last_seen_at, data_json=excluded.data_json',
+                (
+                    document['domain'],
+                    isoformat(document['minute_bucket']),
+                    document['node_id'],
+                    isoformat(document.get('last_seen_at')),
+                    payload,
+                ),
+            )
+            self.conn.commit()
+
+    def aggregate(self, pipeline: List[Dict[str, Any]]):
+        docs = self._load_all()
+        for step in pipeline:
+            if '$match' in step:
+                docs = filter_documents(docs, step['$match'])
+            elif '$group' in step:
+                group_spec = step['$group']
+                grouped = {}
+                for doc in docs:
+                    key_spec = group_spec['_id']
+                    if isinstance(key_spec, str) and key_spec.startswith('$'):
+                        group_key = doc[key_spec[1:]]
+                    else:
+                        bucket_expr = key_spec['bucket']['$dateTrunc']
+                        unit = bucket_expr['unit']
+                        bucket_value = truncate_datetime(doc['minute_bucket'], unit)
+                        group_key = {'domain': doc['domain'], 'bucket': bucket_value}
+                    bucket = json.dumps(serialize_storage_value(group_key), sort_keys=True)
+                    if bucket not in grouped:
+                        grouped[bucket] = {'_id': group_key}
+                        for field in group_spec.keys():
+                            if field == '_id':
+                                continue
+                            if '$sum' in group_spec[field]:
+                                grouped[bucket][field] = 0
+                            elif '$max' in group_spec[field]:
+                                grouped[bucket][field] = None
+                    for field, expr in group_spec.items():
+                        if field == '_id':
+                            continue
+                        if '$sum' in expr:
+                            source = expr['$sum'][1:]
+                            grouped[bucket][field] += doc.get(source, 0)
+                        elif '$max' in expr:
+                            source = expr['$max'][1:]
+                            value = doc.get(source)
+                            if grouped[bucket][field] is None or (value is not None and value > grouped[bucket][field]):
+                                grouped[bucket][field] = value
+                docs = list(grouped.values())
+            elif '$sort' in step:
+                sort_spec = step['$sort']
+                for key, direction in reversed(list(sort_spec.items())):
+                    reverse = direction == DESCENDING
+                    docs.sort(key=lambda item: get_nested(item, key) if get_nested(item, key) is not None else '', reverse=reverse)
+            elif '$limit' in step:
+                docs = docs[:step['$limit']]
+        return docs
+
+
+def truncate_datetime(value: datetime, unit: str) -> datetime:
+    value = parse_datetime(value)
+    if unit == 'minute':
+        return value.replace(second=0, microsecond=0)
+    if unit == 'hour':
+        return value.replace(minute=0, second=0, microsecond=0)
+    if unit == 'day':
+        return value.replace(hour=0, minute=0, second=0, microsecond=0)
+    raise ValueError(f'unsupported unit: {unit}')
+
+
 def add_dns_record_to_db(record_collection, stats_collection, dns_request, domain_config, route_actions, parsed=True, error=None):
     if record_collection is None or stats_collection is None:
         return None
@@ -504,7 +817,7 @@ def add_dns_record_to_db(record_collection, stats_collection, dns_request, domai
 
 
 def persist_dns_event(raw_request, domain_config, route_actions, parsed=True, error=None):
-    if not state.mongo_available or state.record_collection is None or state.stats_collection is None:
+    if not state.db_available or state.record_collection is None or state.stats_collection is None:
         return None
     try:
         return add_dns_record_to_db(
@@ -517,8 +830,9 @@ def persist_dns_event(raw_request, domain_config, route_actions, parsed=True, er
             error=error,
         )
     except Exception as exc:
-        logging.error("failed to persist dns event: %s", exc)
+        logging.error('failed to persist dns event: %s', exc)
         state.set_error(str(exc))
+        disable_sqlite(str(exc))
         return None
 
 
@@ -527,7 +841,7 @@ def process_dns_request(dns_request_json):
     state.touch_request()
     try:
         dns_request = json.loads(dns_request_json)
-        logging.debug("recv a dns request: %s", dns_request)
+        logging.debug('recv a dns request: %s', dns_request)
         if 'request-domain' in dns_request.keys():
             dns_request['request-domain'] = normalize_domain(dns_request['request-domain'])
             domain_config = get_domain_config(dns_request['request-domain'], state.config_cache)
@@ -535,7 +849,7 @@ def process_dns_request(dns_request_json):
             domain_config = {'domain': '*', 'ipv4_gw': system_default_gw, 'ipv6_gw': system_default_ipv6_gw}
             dns_request['request-domain'] = '*'
         else:
-            raise ValueError(f"unsupport request type: {dns_request}")
+            raise ValueError(f'unsupport request type: {dns_request}')
 
         if domain_config is None and state.args.default:
             domain_config = {
@@ -549,7 +863,7 @@ def process_dns_request(dns_request_json):
             route_actions = add_static_route(dns_request, domain_config)
         persist_dns_event(dns_request, domain_config, route_actions)
     except Exception as exc:
-        logging.error("Error happened: %s --> %s", exc.__class__.__name__, str(exc))
+        logging.error('Error happened: %s --> %s', exc.__class__.__name__, str(exc))
         state.set_error(str(exc))
         try:
             raw_request = json.loads(dns_request_json)
@@ -570,7 +884,7 @@ def read_config_collection(args, config_collection):
             'ipv4_gw': item.get('ipv4_gw'),
             'ipv6_gw': item.get('ipv6_gw'),
             'enabled': item.get('enabled', True),
-            'source': item.get('source', 'mongo'),
+            'source': item.get('source', 'sqlite'),
             'comment': item.get('comment'),
             'created_at': item.get('created_at'),
             'updated_at': item.get('updated_at'),
@@ -607,8 +921,8 @@ def read_config_from_dnsmasq(dnsmasq_config_dir):
 
 
 def vtysh_clear_all_static_route(dns_ip):
-    logging.info("Start clear all static route, except dns: %s/32", dns_ip)
-    dns_net = (dns_ip + "/32", get_default_ipv4_gw())
+    logging.info('Start clear all static route, except dns: %s/32', dns_ip)
+    dns_net = (dns_ip + '/32', get_default_ipv4_gw())
     static_net_list = vtysh_list_static_route()
     for static_net in list(static_net_list):
         if dns_net == static_net:
@@ -637,14 +951,25 @@ def load_config_into_cache():
     return new_config
 
 
+def cleanup_expired_records(record_ttl_days: int):
+    if state.db_client is None:
+        return
+    cutoff = isoformat(utcnow() - timedelta(days=record_ttl_days))
+    with state.db_lock:
+        state.db_client.conn.execute('DELETE FROM records WHERE created_at < ?', (cutoff,))
+        state.db_client.conn.execute('DELETE FROM record_stats WHERE minute_bucket < ?', (cutoff,))
+        state.db_client.conn.commit()
+
+
 def update_config_timer():
     config_hashset = convert_config_hashset(state.config_cache)
     while not state.stop_event.wait(state.config_refresh_interval):
         try:
-            if not state.mongo_available:
-                ensure_mongodb_connection(state.args.mongodb, state.args.record_ttl_days)
-                if not state.mongo_available:
+            if not state.db_available:
+                ensure_sqlite_connection(state.args.sqlite, state.args.record_ttl_days)
+                if not state.db_available:
                     continue
+            cleanup_expired_records(state.args.record_ttl_days)
             new_config = read_config_collection(state.args, state.config_collection)
             new_config_hashset = convert_config_hashset(new_config)
             differ = set(config_hashset) ^ set(new_config_hashset)
@@ -653,34 +978,32 @@ def update_config_timer():
             write_marker = config_rw_lock.gen_wlock()
             write_marker.acquire()
             try:
-                logging.info(
-                    "config update, differ: %s, before: %s, after: %s",
-                    len(differ), len(config_hashset), len(new_config_hashset)
-                )
+                logging.info('config update, differ: %s, before: %s, after: %s', len(differ), len(config_hashset), len(new_config_hashset))
                 state.config_cache.clear()
                 state.config_cache.extend(new_config)
                 config_hashset = new_config_hashset
             finally:
                 write_marker.release()
         except Exception as exc:
-            logging.error("config refresh failed: %s", exc)
+            logging.error('config refresh failed: %s', exc)
             state.set_error(str(exc))
+            disable_sqlite(str(exc))
 
 
 def config_dns_route(dns_ip):
-    vtysh_ipv4_add_one_static_route(dns_ip + "/32", get_default_ipv4_gw())
+    vtysh_ipv4_add_one_static_route(dns_ip + '/32', get_default_ipv4_gw())
 
 
 def parse_socket_url(socket_proto_url: str) -> Tuple[str, str, int]:
-    socket_proto = re.findall(r"\s*(.+)://\d+\.\d+\.\d+\.\d+", socket_proto_url)
+    socket_proto = re.findall(r'\s*(.+)://\d+\.\d+\.\d+\.\d+', socket_proto_url)
     if len(socket_proto) != 1:
-        raise ValueError(f"failed to parse socket proto url: {socket_proto_url}, proto error")
+        raise ValueError(f'failed to parse socket proto url: {socket_proto_url}, proto error')
     socket_proto = socket_proto[0]
-    socket_addr = re.findall(r"\s*.+://(\d+\.\d+\.\d+\.\d+)", socket_proto_url)
+    socket_addr = re.findall(r'\s*.+://(\d+\.\d+\.\d+\.\d+)', socket_proto_url)
     if len(socket_addr) != 1:
-        raise ValueError(f"failed to parse socket proto url: {socket_proto_url}, addr error")
+        raise ValueError(f'failed to parse socket proto url: {socket_proto_url}, addr error')
     socket_addr = socket_addr[0]
-    socket_port = re.findall(r"\s*.+://\d+\.\d+\.\d+\.\d+:(\d+)", socket_proto_url)
+    socket_port = re.findall(r'\s*.+://\d+\.\d+\.\d+\.\d+:(\d+)', socket_proto_url)
     socket_port = int(socket_port[0]) if len(socket_port) == 1 else 34321
     return socket_proto, socket_addr, socket_port
 
@@ -689,9 +1012,9 @@ def socket_server_loop():
     if state.args.socket is None:
         return
     socket_proto, socket_addr, socket_port = parse_socket_url(state.args.socket)
-    logging.info("Start socket server: proto: %s, addr: %s, port: %s", socket_proto, socket_addr, socket_port)
-    if socket_proto != "udp":
-        raise RuntimeError(f"current not support socket proto: {state.args.socket}")
+    logging.info('Start socket server: proto: %s, addr: %s, port: %s', socket_proto, socket_addr, socket_port)
+    if socket_proto != 'udp':
+        raise RuntimeError(f'current not support socket proto: {state.args.socket}')
 
     server_socket_fd = socket.socket(family=socket.AF_INET, type=socket.SOCK_DGRAM)
     server_socket_fd.bind((socket_addr, socket_port))
@@ -708,93 +1031,128 @@ def socket_server_loop():
             try:
                 payload = message.decode('utf-8')
             except Exception:
-                logging.error("invalid utf-8 payload from udp socket")
+                logging.error('invalid utf-8 payload from udp socket')
                 continue
             process_dns_request(payload)
     finally:
         server_socket_fd.close()
 
 
-def connect_to_mongodb(url, record_ttl_days):
-    myclient = pymongo.MongoClient(url)
-    myclient.admin.command('ping')
-    dns = myclient['dns']
-    dns_record_collection = dns['record']
-    config_collection = dns['config']
-    stats_collection = dns['record_stats']
-    meta_collection = dns['meta']
-
-    config_collection.create_index([('domain', ASCENDING)], unique=True)
-    dns_record_collection.create_index([('created_at', DESCENDING)])
-    dns_record_collection.create_index([('request_domain', ASCENDING), ('created_at', DESCENDING)])
-    dns_record_collection.create_index([('matched_domain', ASCENDING), ('created_at', DESCENDING)])
-    dns_record_collection.create_index([('request_ip', ASCENDING), ('created_at', DESCENDING)])
-    dns_record_collection.create_index(
-        [('created_at', ASCENDING)], expireAfterSeconds=max(1, int(record_ttl_days * 86400))
+def connect_to_sqlite(path, record_ttl_days):
+    del record_ttl_days
+    sqlite_dir = os.path.dirname(path)
+    if sqlite_dir:
+        os.makedirs(sqlite_dir, exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS configs ('
+        'domain TEXT PRIMARY KEY, '
+        'enabled INTEGER NOT NULL, '
+        'updated_at TEXT, '
+        'data_json TEXT NOT NULL)'
     )
-    stats_collection.create_index([('domain', ASCENDING), ('minute_bucket', ASCENDING), ('node_id', ASCENDING)], unique=True)
-    stats_collection.create_index([('minute_bucket', DESCENDING)])
-    return myclient, dns_record_collection, config_collection, stats_collection, meta_collection
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS records ('
+        'id INTEGER PRIMARY KEY AUTOINCREMENT, '
+        'created_at TEXT NOT NULL, '
+        'request_domain TEXT, '
+        'request_ip TEXT, '
+        'matched_domain TEXT, '
+        'route_applied INTEGER NOT NULL, '
+        'data_json TEXT NOT NULL)'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS record_stats ('
+        'domain TEXT NOT NULL, '
+        'minute_bucket TEXT NOT NULL, '
+        'node_id TEXT NOT NULL, '
+        'last_seen_at TEXT, '
+        'data_json TEXT NOT NULL, '
+        'PRIMARY KEY(domain, minute_bucket, node_id))'
+    )
+    conn.execute(
+        'CREATE TABLE IF NOT EXISTS meta ('
+        'key TEXT PRIMARY KEY, '
+        'value TEXT NOT NULL, '
+        'updated_at TEXT NOT NULL)'
+    )
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_records_created_at ON records(created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_records_request_domain ON records(request_domain, created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_records_matched_domain ON records(matched_domain, created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_records_request_ip ON records(request_ip, created_at)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_stats_minute_bucket ON record_stats(minute_bucket)')
+    conn.commit()
+    client = SQLiteClient(conn)
+    return (
+        client,
+        SQLiteRecordCollection(conn, state.db_lock),
+        SQLiteConfigCollection(conn, state.db_lock),
+        SQLiteStatsCollection(conn, state.db_lock),
+        None,
+    )
 
 
-def disable_mongodb(reason: str):
-    if state.mongo_client is not None:
+def disable_sqlite(reason: str):
+    if state.db_client is not None:
         try:
-            state.mongo_client.close()
+            state.db_client.close()
         except Exception:
             pass
-    state.mongo_client = None
+    state.db_client = None
     state.record_collection = None
     state.config_collection = None
     state.stats_collection = None
     state.meta_collection = None
-    state.set_mongo_state(False, reason)
+    state.set_db_state(False, reason)
 
 
-def ensure_mongodb_connection(url, record_ttl_days):
-    if state.mongo_client is not None and state.mongo_available:
+def ensure_sqlite_connection(path, record_ttl_days):
+    if state.db_client is not None and state.db_available:
         try:
-            state.mongo_client.admin.command('ping')
+            state.db_client.admin.command('ping')
             return True
         except Exception as exc:
-            logging.error('mongodb ping failed, switch to degraded mode: %s', exc)
-            disable_mongodb(str(exc))
-
+            logging.error('sqlite ping failed, switch to degraded mode: %s', exc)
+            disable_sqlite(str(exc))
     try:
         (
-            state.mongo_client,
+            state.db_client,
             state.record_collection,
             state.config_collection,
             state.stats_collection,
             state.meta_collection,
-        ) = connect_to_mongodb(url, record_ttl_days)
-        state.set_mongo_state(True, None)
-        logging.info('mongodb connected')
+        ) = connect_to_sqlite(path, record_ttl_days)
+        state.set_db_state(True, None)
+        cleanup_expired_records(record_ttl_days)
         load_config_into_cache()
+        logging.info('sqlite connected: %s', path)
         return True
     except Exception as exc:
-        logging.error('failed to connect mongodb, degraded mode without recording: %s', exc)
-        disable_mongodb(str(exc))
+        logging.error('failed to connect sqlite, degraded mode without recording: %s', exc)
+        disable_sqlite(str(exc))
         return False
 
 
 def process_ip_file(ip_file):
-    logging.info("process ip file: %s", ip_file)
+    logging.info('process ip file: %s', ip_file)
     ipv4_gw = get_default_ipv4_gw()
     with open(ip_file, encoding='utf-8') as file_obj:
         for line in file_obj.readlines():
             line = line.strip()
-            if line.startswith("#") or len(line) == 0:
+            if line.startswith('#') or len(line) == 0:
                 continue
-            if re.match(r"\d+\.\d+\.\d+\.\d+/\d+", line) is not None:
+            if re.match(r'\d+\.\d+\.\d+\.\d+/\d+', line) is not None:
                 vtysh_ipv4_add_one_static_route(line, ipv4_gw)
-                logging.info("add static ip net from ip file: %s -- %s,%s", ip_file, line, ipv4_gw)
+                logging.info('add static ip net from ip file: %s -- %s,%s', ip_file, line, ipv4_gw)
 
 
 def process_extra_ip(args):
     if args.extra is not None and len(args.extra) != 0:
         if not os.path.exists(args.extra):
-            logging.error("failed to open extra file, not exist: %s, ignore it", args.extra)
+            logging.error('failed to open extra file, not exist: %s, ignore it', args.extra)
             return
         if os.path.isfile(args.extra):
             process_ip_file(args.extra)
@@ -834,30 +1192,20 @@ def import_dnsmasq_configs(directory: str) -> Dict[str, int]:
     return {'inserted': inserted, 'updated': updated, 'total': len(records)}
 
 
-def bson_to_jsonable(document: Dict[str, Any]) -> Dict[str, Any]:
+def document_to_jsonable(document: Dict[str, Any]) -> Dict[str, Any]:
     result = {}
     for key, value in document.items():
-        if isinstance(value, ObjectId):
-            result['id' if key == '_id' else key] = str(value)
+        if key == '_id':
+            result['id'] = str(value)
         elif isinstance(value, datetime):
             result[key] = isoformat(value)
         elif isinstance(value, list):
-            result[key] = [bson_to_jsonable(item) if isinstance(item, dict) else isoformat(item) if isinstance(item, datetime) else item for item in value]
+            result[key] = [document_to_jsonable(item) if isinstance(item, dict) else isoformat(item) if isinstance(item, datetime) else item for item in value]
         elif isinstance(value, dict):
-            result[key] = bson_to_jsonable(value)
+            result[key] = document_to_jsonable(value)
         else:
             result[key] = value
     return result
-
-
-def aggregate_bucket_expression(bucket: str):
-    if bucket == 'minute':
-        return {'$dateTrunc': {'date': '$minute_bucket', 'unit': 'minute'}}
-    if bucket == 'hour':
-        return {'$dateTrunc': {'date': '$minute_bucket', 'unit': 'hour'}}
-    if bucket == 'day':
-        return {'$dateTrunc': {'date': '$minute_bucket', 'unit': 'day'}}
-    raise ValueError(f'unsupported bucket: {bucket}')
 
 
 def api_error(code: str, message: str, details: Optional[Any] = None, status_code: int = 400):
@@ -918,14 +1266,14 @@ async def verify_token(authorization: Optional[str] = Header(default=None)):
     return True
 
 
-async def mongodb_guard():
-    if not state.mongo_available or state.mongo_client is None:
-        raise HTTPException(status_code=503, detail=f"mongodb unavailable: {state.mongo_disabled_reason or 'degraded mode'}")
+async def sqlite_guard():
+    if not state.db_available or state.db_client is None:
+        raise HTTPException(status_code=503, detail=f"sqlite unavailable: {state.db_disabled_reason or 'degraded mode'}")
     try:
-        state.mongo_client.admin.command('ping')
+        state.db_client.admin.command('ping')
     except Exception as exc:
-        disable_mongodb(str(exc))
-        raise HTTPException(status_code=503, detail=f'mongodb unavailable: {exc}') from exc
+        disable_sqlite(str(exc))
+        raise HTTPException(status_code=503, detail=f'sqlite unavailable: {exc}') from exc
     return True
 
 
@@ -951,14 +1299,15 @@ def create_api_app():
 
     @app.get('/healthz')
     async def healthz():
-        return {'status': 'ok', 'time': isoformat(utcnow()), 'mongo_available': state.mongo_available}
+        return {'status': 'ok', 'time': isoformat(utcnow()), 'sqlite_available': state.db_available}
 
     @app.get('/api/v1/status', dependencies=[Depends(verify_token)])
     async def get_status():
         return {
-            'mongodb': {
-                'available': state.mongo_available,
-                'reason': state.mongo_disabled_reason,
+            'sqlite': {
+                'available': state.db_available,
+                'reason': state.db_disabled_reason,
+                'path': state.args.sqlite,
             },
             'config_count': len(state.config_cache),
             'last_request_at': isoformat(state.last_request_at),
@@ -971,15 +1320,15 @@ def create_api_app():
             },
         }
 
-    @app.get('/api/v1/configs', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/configs', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def list_configs(enabled: Optional[bool] = None):
         query = {}
         if enabled is not None:
             query['enabled'] = enabled
-        items = [bson_to_jsonable(item) for item in state.config_collection.find(query).sort('domain', ASCENDING)]
+        items = [document_to_jsonable(item) for item in state.config_collection.find(query).sort('domain', ASCENDING)]
         return {'items': items}
 
-    @app.post('/api/v1/configs', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.post('/api/v1/configs', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def create_config(payload: ConfigPayload):
         now = utcnow()
         document = payload.model_dump()
@@ -987,17 +1336,17 @@ def create_api_app():
         document['updated_at'] = now
         state.config_collection.insert_one(document)
         load_config_into_cache()
-        return {'item': bson_to_jsonable(document)}
+        return {'item': document_to_jsonable(document)}
 
-    @app.get('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def get_config(domain: str):
         normalized = normalize_domain(domain)
         item = state.config_collection.find_one({'domain': normalized})
         if item is None:
             raise HTTPException(status_code=404, detail='config not found')
-        return {'item': bson_to_jsonable(item)}
+        return {'item': document_to_jsonable(item)}
 
-    @app.put('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.put('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def update_config(domain: str, payload: ConfigPayload):
         normalized = normalize_domain(domain)
         if payload.domain != normalized:
@@ -1010,9 +1359,9 @@ def create_api_app():
         if updated is None:
             raise HTTPException(status_code=404, detail='config not found')
         load_config_into_cache()
-        return {'item': bson_to_jsonable(updated)}
+        return {'item': document_to_jsonable(updated)}
 
-    @app.delete('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.delete('/api/v1/configs/{domain}', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def delete_config(domain: str):
         normalized = normalize_domain(domain)
         result = state.config_collection.delete_one({'domain': normalized})
@@ -1021,17 +1370,17 @@ def create_api_app():
         load_config_into_cache()
         return {'deleted': True, 'domain': normalized}
 
-    @app.post('/api/v1/configs/import-dnsmasq', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.post('/api/v1/configs/import-dnsmasq', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def import_configs(payload: ImportPayload):
         result = import_dnsmasq_configs(payload.directory)
         return result
 
-    @app.post('/api/v1/configs/reload', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.post('/api/v1/configs/reload', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def reload_configs():
         configs = load_config_into_cache()
         return {'reloaded': len(configs)}
 
-    @app.get('/api/v1/records', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/records', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def list_records(
         domain: Optional[str] = None,
         request_ip: Optional[str] = None,
@@ -1056,22 +1405,22 @@ def create_api_app():
         if time_query:
             query['created_at'] = time_query
         if cursor:
-            query['_id'] = {'$lt': ObjectId(cursor)}
+            query['_id'] = {'$lt': int(cursor)}
         docs = list(state.record_collection.find(query).sort('_id', DESCENDING).limit(limit + 1))
         next_cursor = None
         if len(docs) > limit:
             next_cursor = str(docs[limit - 1]['_id'])
             docs = docs[:limit]
-        return {'items': [bson_to_jsonable(item) for item in docs], 'next_cursor': next_cursor}
+        return {'items': [document_to_jsonable(item) for item in docs], 'next_cursor': next_cursor}
 
-    @app.get('/api/v1/records/{record_id}', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/records/{record_id}', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def get_record(record_id: str):
-        doc = state.record_collection.find_one({'_id': ObjectId(record_id)})
+        doc = state.record_collection.find_one({'_id': int(record_id)})
         if doc is None:
             raise HTTPException(status_code=404, detail='record not found')
-        return {'item': bson_to_jsonable(doc)}
+        return {'item': document_to_jsonable(doc)}
 
-    @app.get('/api/v1/stats/domains', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/stats/domains', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def get_domain_stats(
         domain: Optional[str] = None,
         from_time: Optional[str] = Query(default=None, alias='from'),
@@ -1095,7 +1444,7 @@ def create_api_app():
             {'$group': {
                 '_id': {
                     'domain': '$domain',
-                    'bucket': aggregate_bucket_expression(bucket),
+                    'bucket': {'$dateTrunc': {'date': '$minute_bucket', 'unit': bucket}},
                 },
                 'query_count': {'$sum': '$query_count'},
                 'route_apply_count': {'$sum': '$route_apply_count'},
@@ -1119,7 +1468,7 @@ def create_api_app():
             })
         return {'items': items}
 
-    @app.get('/api/v1/stats/top-domains', dependencies=[Depends(verify_token), Depends(mongodb_guard)])
+    @app.get('/api/v1/stats/top-domains', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
     async def get_top_domains(
         from_time: Optional[str] = Query(default=None, alias='from'),
         to_time: Optional[str] = Query(default=None, alias='to'),
@@ -1168,12 +1517,10 @@ def create_api_app():
         cleared = vtysh_clear_all_static_route(dns_ip)
         return {'cleared': [{'target': target, 'gateway': gateway} for target, gateway in cleared], 'kept_dns_ip': dns_ip}
 
-    @app.post('/api/v1/routes/reapply', dependencies=[Depends(verify_token)])
-    async def reapply_routes(_: bool = Depends(mongodb_guard)):
+    @app.post('/api/v1/routes/reapply', dependencies=[Depends(verify_token), Depends(sqlite_guard)])
+    async def reapply_routes():
         applied = []
-        cursor = state.record_collection.find(
-            {'matched_domain': {'$ne': None}, 'status.route_applied': True}
-        ).sort('created_at', DESCENDING).limit(200)
+        cursor = state.record_collection.find({'matched_domain': {'$ne': None}, 'status.route_applied': True}).sort('created_at', DESCENDING).limit(200)
         for record in cursor:
             raw_request = record.get('raw_request') or {}
             request_domain = raw_request.get('request-domain')
@@ -1185,11 +1532,7 @@ def create_api_app():
             if config is None:
                 continue
             route_actions = add_static_route(raw_request, config)
-            applied.append({
-                'request_domain': request_domain,
-                'matched_domain': config['domain'],
-                'route_actions': route_actions,
-            })
+            applied.append({'request_domain': request_domain, 'matched_domain': config['domain'], 'route_actions': route_actions})
         return {'items': applied}
 
     return app
@@ -1203,45 +1546,34 @@ def api_server_loop():
 
 
 def setup_logging(args):
-    if args.debug:
-        log_level = logging.DEBUG
-    else:
-        log_level = logging.INFO
-
-    log_formatter = "%(asctime)s [%(threadName)s] [%(levelname)-5.5s]  %(message)s"
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    log_formatter = '%(asctime)s [%(threadName)s] [%(levelname)-5.5s]  %(message)s'
     if args.log is not None and len(args.log) != 0:
-        file_handler = RotatingFileHandler(
-            args.log,
-            mode='a',
-            maxBytes=5 * 1024 * 1024,
-            backupCount=1,
-            encoding='utf-8',
-            delay=False,
-        )
+        file_handler = RotatingFileHandler(args.log, mode='a', maxBytes=5 * 1024 * 1024, backupCount=1, encoding='utf-8', delay=False)
         file_handler.setFormatter(logging.Formatter(log_formatter))
         logging.basicConfig(format=log_formatter, level=log_level, handlers=[file_handler])
     else:
         logging.basicConfig(format=log_formatter, level=log_level, handlers=[logging.StreamHandler(sys.stdout)])
-    logging.info("start smartdns-server python server ,log_level: %s", log_level)
+    logging.info('start smartdns-server python server ,log_level: %s', log_level)
 
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(description='dns_server process.')
     parser.add_argument('--log', metavar='l', type=str, required=False, help='log file')
-    parser.add_argument('--mongodb', metavar='m', type=str, required=True, help='mongodb url, example: mongodb://localhost:27017/')
+    parser.add_argument('--sqlite', metavar='s', type=str, required=False, default='/var/lib/smartdns/smartdns.sqlite3', help='sqlite file path')
     parser.add_argument('--node_id', metavar='n', type=str, required=True, help='node id, example: 10.10.8.1')
     parser.add_argument('--dns', metavar='d', type=str, required=True, help='dns IP, example: 8.8.8.8')
     parser.add_argument('--socket', metavar='u', type=str, required=False, help='server proto, current support udp, example: udp://127.0.0.1:1234')
     parser.add_argument('--extra', metavar='e', type=str, required=False, help='extra_ip_net list file')
     parser.add_argument('--debug', action='store_true', help='config if debug')
-    parser.add_argument('--default', action='store_true', help='use as all default with any dns request, ignore mongo config miss')
+    parser.add_argument('--default', action='store_true', help='use as all default with any dns request, ignore sqlite config miss')
     parser.add_argument('--clear', action='store_true', help='clear all static route')
     parser.add_argument('--api-host', type=str, default='localhost', help='rest api listen host, default localhost')
     parser.add_argument('--api-port', type=int, default=8080, help='rest api listen port, default 8080')
     parser.add_argument('--api-token', type=str, default=None, help='rest api bearer token')
     parser.add_argument('--record-ttl-days', type=int, default=7, help='dns record ttl days')
-    parser.add_argument('--config-refresh-interval', type=int, default=5, help='mongo config refresh interval seconds')
-    parser.add_argument('--import-dnsmasq-dir', type=str, default=None, help='import dnsmasq config dir into mongodb and exit')
+    parser.add_argument('--config-refresh-interval', type=int, default=5, help='sqlite config refresh interval seconds')
+    parser.add_argument('--import-dnsmasq-dir', type=str, default=None, help='import dnsmasq config dir into sqlite and exit')
     return parser
 
 
@@ -1266,11 +1598,11 @@ def main():
     system_default_gw = get_default_ipv4_gw()
     system_default_ipv6_gw = get_default_ipv6_gw()
 
-    ensure_mongodb_connection(args.mongodb, args.record_ttl_days)
+    ensure_sqlite_connection(args.sqlite, args.record_ttl_days)
 
     if args.import_dnsmasq_dir:
-        if not state.mongo_available:
-            logging.error('cannot import dnsmasq config without mongodb connection')
+        if not state.db_available:
+            logging.error('cannot import dnsmasq config without sqlite connection')
             return 1
         result = import_dnsmasq_configs(args.import_dnsmasq_dir)
         logging.info('import dnsmasq config result: %s', result)
@@ -1284,7 +1616,6 @@ def main():
 
     vtysh_console = start_vtysh_console()
     process_extra_ip(args)
-
     config_dns_route(args.dns)
 
     refresh_thread = threading.Thread(target=update_config_timer, name='config-refresh', daemon=True)
@@ -1310,8 +1641,8 @@ def main():
                 return 1
     finally:
         state.stop_event.set()
-        if state.mongo_client is not None:
-            state.mongo_client.close()
+        if state.db_client is not None:
+            state.db_client.close()
     return 0
 
 

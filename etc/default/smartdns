@@ -6,7 +6,7 @@ SMART_DNS_OPTS=
 EXTRA_SERVER_OPTS=--extra=/opt/tel.ip
 NODE_ID=--node_id=10.11.200.100
 DNS=--dns=1.1.1.1
-MONGODB=--mongodb=mongodb://127.0.0.1:27017/
+SQLITE=--sqlite=/var/lib/smartdns/smartdns.sqlite3
 API_HOST=
 API_PORT=
 API_TOKEN=--api-token=changeme
