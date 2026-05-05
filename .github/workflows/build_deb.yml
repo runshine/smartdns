@@ -11,8 +11,7 @@ jobs:
       - name: build-package
         run: cd package ;echo "ARCH is $(uname -a)"; if [ $(uname -m) == 'x86_64' ] ;then echo "build x86_64" && ./build-pkg.sh --platform debian --arch x86-64;fi; if [ $(uname -m) == 'aarch64' ] ;then echo "build aarch64" && ./build-pkg.sh --platform debian --arch aarch64;fi;
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
           name: smartdns-latest
           path: package/smartdns.*.deb
-
